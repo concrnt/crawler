@@ -1,0 +1,29 @@
+server:
+  listen: ":8080"
+  publicURL: "https://search.example.net"
+  adminToken: ""
+
+crawl:
+  seed: "ariake.concrnt.net"
+  prefix: "cckv://"
+  knownServersInterval: "10m"
+  incrementalInterval: "15m"
+  requestTimeout: "10s"
+  globalConcurrency: 8
+  perServerConcurrency: 1
+  pageLimit: 100
+  overlap: "2m"
+  maxPagesPerRun: 1000
+  profileSchemas:
+    - "https://schema.concrnt.world/p/main.json"
+  communitySchemas:
+    - "https://schema.concrnt.world/t/community.json"
+
+backends:
+  postgresDsn: "postgres://concrnt_search:password@postgres:5432/concrnt_search?sslmode=disable"
+  meiliHost: "http://meilisearch:7700"
+  meiliAPIKey: ""
+
+observability:
+  enableTrace: false
+  traceEndpoint: ""
