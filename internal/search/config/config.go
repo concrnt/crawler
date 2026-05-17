@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -60,6 +61,7 @@ type Server struct {
 
 type Crawl struct {
 	Seed                 string   `yaml:"seed"`
+	Layer                string   `yaml:"layer"`
 	Prefix               string   `yaml:"prefix"`
 	KnownServersInterval Duration `yaml:"knownServersInterval"`
 	IncrementalInterval  Duration `yaml:"incrementalInterval"`
@@ -146,6 +148,7 @@ func (c *Config) Validate() error {
 	if c.Crawl.Seed == "" {
 		return fmt.Errorf("crawl.seed is required")
 	}
+	c.Crawl.Layer = strings.TrimSpace(c.Crawl.Layer)
 	if c.Crawl.Prefix == "" {
 		c.Crawl.Prefix = "cckv://"
 	}

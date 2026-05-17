@@ -25,7 +25,6 @@ type ServerDocument struct {
 	Type              string         `json:"type"`
 	FQDN              string         `json:"fqdn"`
 	CSID              string         `json:"csid"`
-	Layer             string         `json:"layer"`
 	Version           string         `json:"version"`
 	SoftwareVersion   string         `json:"softwareVersion"`
 	SoftwareBuildTime string         `json:"softwareBuildTime"`
@@ -68,8 +67,8 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 	}{
 		{
 			uid:        ServersIndex,
-			searchable: []string{"fqdn", "csid", "layer", "softwareVersion"},
-			filterable: []string{"layer", "status"},
+			searchable: []string{"fqdn", "csid", "softwareVersion"},
+			filterable: []string{"status"},
 			sortable:   []string{"lastSeenAt", "lastCrawledAt"},
 		},
 		{
@@ -126,7 +125,7 @@ func (s *Store) UpsertServers(ctx context.Context, docs []ServerDocument) error 
 		return nil
 	}
 	index := s.client.Index(ServersIndex)
-	task, err := index.UpdateDocumentsWithContext(ctx, docs, "id")
+	task, err := index.AddDocumentsWithContext(ctx, docs, "id")
 	return s.waitTask(ctx, task, err)
 }
 
@@ -135,7 +134,7 @@ func (s *Store) UpsertUsers(ctx context.Context, docs []normalize.UserDocument) 
 		return nil
 	}
 	index := s.client.Index(UsersIndex)
-	task, err := index.UpdateDocumentsWithContext(ctx, docs, "id")
+	task, err := index.AddDocumentsWithContext(ctx, docs, "id")
 	return s.waitTask(ctx, task, err)
 }
 
@@ -144,7 +143,7 @@ func (s *Store) UpsertCommunities(ctx context.Context, docs []normalize.Communit
 		return nil
 	}
 	index := s.client.Index(CommunitiesIndex)
-	task, err := index.UpdateDocumentsWithContext(ctx, docs, "id")
+	task, err := index.AddDocumentsWithContext(ctx, docs, "id")
 	return s.waitTask(ctx, task, err)
 }
 
@@ -203,7 +202,6 @@ func ServerDocFromWellKnown(wkc concrnt.WellKnownConcrnt, lastSeenAt time.Time, 
 		Type:              "server",
 		FQDN:              wkc.Domain,
 		CSID:              wkc.CSID,
-		Layer:             wkc.Layer,
 		Version:           wkc.Version,
 		SoftwareVersion:   wkc.SoftwareInfo.Version,
 		SoftwareBuildTime: wkc.SoftwareInfo.BuildTime,

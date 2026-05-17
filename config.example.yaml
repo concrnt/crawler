@@ -4,6 +4,7 @@ server:
 
 crawl:
   seed: "ariake.concrnt.net"
+  layer: "concrnt-mainnet"
   prefix: "cckv://"
   knownServersInterval: "10m"
   incrementalInterval: "15m"

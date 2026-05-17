@@ -38,6 +38,7 @@ server:
 
 crawl:
   seed: "ariake.concrnt.net"
+  layer: "concrnt-mainnet"
   prefix: "cckv://"
   knownServersInterval: "10m"
   incrementalInterval: "15m"
@@ -89,7 +90,7 @@ GET /api/v1/search/communities?q=general&limit=20&offset=0&sourceServer=example.
 ### Search Servers
 
 ```http
-GET /api/v1/search/servers?q=ariake&limit=20&offset=0&layer=concrnt&status=active
+GET /api/v1/search/servers?q=ariake&limit=20&offset=0&status=active
 ```
 
 Search response:

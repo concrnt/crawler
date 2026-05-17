@@ -121,9 +121,14 @@ func (c *Crawler) DiscoverOnce(ctx context.Context) error {
 	servers = dedupeServers(servers)
 
 	serverDocs := make([]meili.ServerDocument, 0, len(servers))
+	skippedByLayer := 0
 	for _, wkc := range servers {
 		if wkc.Domain == "" {
 			c.logger.Warn("skipping known server with empty domain", slog.String("csid", wkc.CSID))
+			continue
+		}
+		if !c.matchesLayer(wkc) {
+			skippedByLayer++
 			continue
 		}
 		state, err := c.upsertServerState(ctx, wkc, now)
@@ -135,7 +140,7 @@ func (c *Crawler) DiscoverOnce(ctx context.Context) error {
 	if err := c.store.UpsertServers(ctx, serverDocs); err != nil {
 		return fmt.Errorf("upsert server index: %w", err)
 	}
-	c.logger.Info("server discovery completed", slog.Int("servers", len(serverDocs)))
+	c.logger.Info("server discovery completed", slog.Int("servers", len(serverDocs)), slog.Int("skippedByLayer", skippedByLayer), slog.String("layer", c.cfg.Layer))
 	return nil
 }
 
@@ -152,6 +157,9 @@ func (c *Crawler) CrawlCCFS(ctx context.Context, ccfs string) (ManualCrawlResult
 	if err != nil {
 		c.logger.Warn("failed to resolve ccfs source host", slog.String("ccfs", ccfs), slog.String("error", err.Error()))
 		sourceServer = parsed.Owner
+	}
+	if err := c.ensureSourceLayer(ctx, sourceServer); err != nil {
+		return ManualCrawlResult{}, err
 	}
 
 	var sd concrnt.SignedDocument
@@ -306,7 +314,11 @@ func (c *Crawler) upsertServerState(ctx context.Context, wkc concrnt.WellKnownCo
 
 func (c *Crawler) CrawlOnce(ctx context.Context) error {
 	var servers []model.ServerState
-	if err := c.db.WithContext(ctx).Where("disabled = ?", false).Order("domain asc").Find(&servers).Error; err != nil {
+	query := c.db.WithContext(ctx).Where("disabled = ?", false)
+	if c.cfg.Layer != "" {
+		query = query.Where("layer = ?", c.cfg.Layer)
+	}
+	if err := query.Order("domain asc").Find(&servers).Error; err != nil {
 		return err
 	}
 	if len(servers) == 0 {
@@ -368,6 +380,10 @@ func (c *Crawler) crawlServer(ctx context.Context, state model.ServerState) erro
 	if err != nil {
 		return err
 	}
+	if !c.matchesLayer(wkc) {
+		c.logger.Info("skipping server with unmatched layer", slog.String("server", state.Domain), slog.String("serverLayer", wkc.Layer), slog.String("targetLayer", c.cfg.Layer))
+		return nil
+	}
 	if _, ok := wkc.Endpoints["net.concrnt.core.query"]; !ok {
 		c.logger.Warn("query endpoint missing; skipping crawl", slog.String("server", wkc.Domain))
 		return nil
@@ -398,6 +414,24 @@ func (c *Crawler) crawlServer(ctx context.Context, state model.ServerState) erro
 		return err
 	}
 	return joined
+}
+
+func (c *Crawler) matchesLayer(wkc concrnt.WellKnownConcrnt) bool {
+	return c.cfg.Layer == "" || wkc.Layer == c.cfg.Layer
+}
+
+func (c *Crawler) ensureSourceLayer(ctx context.Context, sourceServer string) error {
+	if c.cfg.Layer == "" {
+		return nil
+	}
+	wkc, err := c.client.GetServer(ctx, sourceServer, nil)
+	if err != nil {
+		return fmt.Errorf("get source server for layer check: %w", err)
+	}
+	if !c.matchesLayer(wkc) {
+		return fmt.Errorf("source server layer mismatch: got %q want %q", wkc.Layer, c.cfg.Layer)
+	}
+	return nil
 }
 
 func (c *Crawler) crawlScope(ctx context.Context, serverDomain string, kind string, schema string) error {

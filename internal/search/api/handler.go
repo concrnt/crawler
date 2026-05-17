@@ -76,10 +76,8 @@ func (h *Handler) searchCommunities(c echo.Context) error {
 
 func (h *Handler) searchServers(c echo.Context) error {
 	filter := meili.BuildFilter(map[string]string{
-		"layer":  c.QueryParam("layer"),
 		"status": c.QueryParam("status"),
 	}, map[string]bool{
-		"layer":  true,
 		"status": true,
 	})
 	return h.search(c, meili.ServersIndex, filter)

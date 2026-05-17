@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/concrnt/concrnt"
+	"github.com/concrnt/concrnt-search/internal/search/config"
 )
 
 func TestPageBoundary(t *testing.T) {
@@ -58,6 +59,21 @@ func TestShouldBackoff(t *testing.T) {
 	}
 }
 
+func TestMatchesLayer(t *testing.T) {
+	c := New(nil, nil, nil, configWithLayer("concrnt-mainnet"), nil)
+	if !c.matchesLayer(concrnt.WellKnownConcrnt{Layer: "concrnt-mainnet"}) {
+		t.Fatal("expected matching layer")
+	}
+	if c.matchesLayer(concrnt.WellKnownConcrnt{Layer: "concrnt-testnet"}) {
+		t.Fatal("expected mismatched layer to be rejected")
+	}
+
+	c = New(nil, nil, nil, configWithLayer(""), nil)
+	if !c.matchesLayer(concrnt.WellKnownConcrnt{Layer: "anything"}) {
+		t.Fatal("empty target layer should accept all layers")
+	}
+}
+
 func TestQueryURITemplateExpansion(t *testing.T) {
 	path, err := concrnt.RenderURITemplate(
 		"/query{?prefix,schema,since,until,limit,order,parent}",
@@ -101,4 +117,10 @@ func testSignedDocument(t *testing.T, createdAt time.Time) concrnt.SignedDocumen
 		Document: string(body),
 		Proof:    concrnt.Proof{Type: concrnt.ProofTypeNone},
 	}
+}
+
+func configWithLayer(layer string) config.Crawl {
+	cfg := config.Default().Crawl
+	cfg.Layer = layer
+	return cfg
 }
