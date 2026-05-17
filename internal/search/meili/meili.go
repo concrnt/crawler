@@ -2,6 +2,7 @@ package meili
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -177,11 +178,19 @@ func (s *Store) waitTask(ctx context.Context, task *meilisearch.TaskInfo, err er
 	}
 	if done.Status != meilisearch.TaskStatusSucceeded {
 		if done.Status == meilisearch.TaskStatusFailed {
-			return fmt.Errorf("meilisearch task %d failed", task.TaskUID)
+			return fmt.Errorf("meilisearch task %d failed: %s", task.TaskUID, taskErrorSummary(done))
 		}
-		return fmt.Errorf("meilisearch task %d ended with status %s", task.TaskUID, done.Status)
+		return fmt.Errorf("meilisearch task %d ended with status %s: %s", task.TaskUID, done.Status, taskErrorSummary(done))
 	}
 	return nil
+}
+
+func taskErrorSummary(task *meilisearch.Task) string {
+	raw, err := json.Marshal(task)
+	if err != nil {
+		return fmt.Sprintf("%+v", task)
+	}
+	return string(raw)
 }
 
 func ServerDocFromWellKnown(wkc concrnt.WellKnownConcrnt, lastSeenAt time.Time, lastCrawledAt *time.Time, disabled bool) ServerDocument {
@@ -190,7 +199,7 @@ func ServerDocFromWellKnown(wkc concrnt.WellKnownConcrnt, lastSeenAt time.Time, 
 		status = "disabled"
 	}
 	return ServerDocument{
-		ID:                wkc.Domain,
+		ID:                normalize.EncodeMeiliID(wkc.Domain),
 		Type:              "server",
 		FQDN:              wkc.Domain,
 		CSID:              wkc.CSID,

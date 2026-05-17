@@ -2,6 +2,7 @@ package normalize
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,24 @@ func TestEncodeCCKVIsStableAndReversible(t *testing.T) {
 	}
 	if encoded != EncodeCCKV(cckv) {
 		t.Fatal("cckv encoding is not stable")
+	}
+	if strings.ContainsAny(encoded, ".%/+:=") {
+		t.Fatalf("encoded id contains characters rejected by meilisearch: %q", encoded)
+	}
+}
+
+func TestEncodeMeiliIDForServerDomain(t *testing.T) {
+	domain := "denken.concrnt.net"
+	encoded := EncodeMeiliID(domain)
+	decoded, err := DecodeMeiliID(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded != domain {
+		t.Fatalf("decoded domain mismatch: got %q want %q", decoded, domain)
+	}
+	if strings.ContainsAny(encoded, ".%/+:=") {
+		t.Fatalf("encoded id contains characters rejected by meilisearch: %q", encoded)
 	}
 }
 

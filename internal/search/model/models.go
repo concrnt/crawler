@@ -33,7 +33,7 @@ func (j *JSONB) Scan(value any) error {
 
 type ServerState struct {
 	Domain        string `gorm:"primaryKey;type:text"`
-	CSID          string `gorm:"type:text;index"`
+	CSID          string `gorm:"column:cs_id;type:text;index"`
 	Layer         string `gorm:"type:text"`
 	Version       string `gorm:"type:text"`
 	WellKnownJSON JSONB  `gorm:"type:jsonb"`

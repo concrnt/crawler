@@ -1,9 +1,9 @@
 package normalize
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"time"
 
 	"github.com/concrnt/concrnt"
@@ -76,11 +76,23 @@ type ParsedDocument struct {
 }
 
 func EncodeCCKV(cckv string) string {
-	return url.QueryEscape(cckv)
+	return EncodeMeiliID(cckv)
 }
 
 func DecodeCCKV(encoded string) (string, error) {
-	return url.QueryUnescape(encoded)
+	return DecodeMeiliID(encoded)
+}
+
+func EncodeMeiliID(value string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(value))
+}
+
+func DecodeMeiliID(encoded string) (string, error) {
+	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", err
+	}
+	return string(decoded), nil
 }
 
 func ParseSignedDocument(sd concrnt.SignedDocument, expectedSchema string) (ParsedDocument, bool, error) {

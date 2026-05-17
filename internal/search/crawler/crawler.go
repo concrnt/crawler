@@ -200,7 +200,7 @@ func (c *Crawler) upsertServerState(ctx context.Context, wkc concrnt.WellKnownCo
 	err = c.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "domain"}},
 		DoUpdates: clause.Assignments(map[string]any{
-			"csid":            wkc.CSID,
+			"cs_id":           wkc.CSID,
 			"layer":           wkc.Layer,
 			"version":         wkc.Version,
 			"well_known_json": model.JSONB(string(raw)),
