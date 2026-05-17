@@ -35,7 +35,6 @@ Minimal example:
 server:
   listen: ":8080"
   publicURL: "http://localhost:8080"
-  adminToken: ""
 
 crawl:
   seed: "ariake.concrnt.net"
@@ -114,3 +113,17 @@ GET /api/v1/stats
 
 Returns DB crawler counts and Meilisearch stats.
 
+### Crawl CCFS
+
+```http
+POST /api/v1/crawl/ccfs
+Content-Type: application/json
+```
+
+```json
+{
+  "ccfs": "ccfs://..."
+}
+```
+
+You can also post the CCFS URI as `text/plain`.

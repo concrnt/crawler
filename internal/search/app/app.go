@@ -68,7 +68,7 @@ func Run(ctx context.Context, cfg searchconfig.Config, version string) error {
 			`"error":"${error}","latency":${latency},"bytes_in":${bytes_in},"bytes_out":${bytes_out}}` + "\n",
 	}))
 
-	api.New(db, searchStore, searchCrawler, cfg.Server.AdminToken).RegisterRoutes(e)
+	api.New(db, searchStore, searchCrawler).RegisterRoutes(e)
 
 	serverErr := make(chan error, 1)
 	go func() {

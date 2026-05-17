@@ -54,9 +54,8 @@ type Config struct {
 }
 
 type Server struct {
-	Listen     string `yaml:"listen"`
-	PublicURL  string `yaml:"publicURL"`
-	AdminToken string `yaml:"adminToken"`
+	Listen    string `yaml:"listen"`
+	PublicURL string `yaml:"publicURL"`
 }
 
 type Crawl struct {

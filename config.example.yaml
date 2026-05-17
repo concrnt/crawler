@@ -1,7 +1,6 @@
 server:
   listen: ":8080"
   publicURL: "https://search.example.net"
-  adminToken: ""
 
 crawl:
   seed: "ariake.concrnt.net"

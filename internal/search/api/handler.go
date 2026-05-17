@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
-	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,23 +21,21 @@ type SearchStore interface {
 	Stats(ctx context.Context) (*meilisearch.Stats, error)
 }
 
-type Recrawler interface {
-	CrawlOnce(ctx context.Context) error
+type CCFSCrawler interface {
+	CrawlCCFS(ctx context.Context, ccfs string) (crawler.ManualCrawlResult, error)
 }
 
 type Handler struct {
-	db         *gorm.DB
-	store      SearchStore
-	recrawler  Recrawler
-	adminToken string
+	db      *gorm.DB
+	store   SearchStore
+	crawler CCFSCrawler
 }
 
-func New(db *gorm.DB, store SearchStore, recrawler Recrawler, adminToken string) *Handler {
+func New(db *gorm.DB, store SearchStore, crawler CCFSCrawler) *Handler {
 	return &Handler{
-		db:         db,
-		store:      store,
-		recrawler:  recrawler,
-		adminToken: adminToken,
+		db:      db,
+		store:   store,
+		crawler: crawler,
 	}
 }
 
@@ -47,9 +45,7 @@ func (h *Handler) RegisterRoutes(e *echo.Echo) {
 	e.GET("/api/v1/search/communities", h.searchCommunities)
 	e.GET("/api/v1/search/servers", h.searchServers)
 	e.GET("/api/v1/stats", h.stats)
-	if h.adminToken != "" {
-		e.POST("/api/v1/admin/recrawl", h.adminRecrawl)
-	}
+	e.POST("/api/v1/crawl/ccfs", h.crawlCCFS)
 }
 
 func (h *Handler) health(c echo.Context) error {
@@ -158,61 +154,45 @@ func (h *Handler) stats(c echo.Context) error {
 	})
 }
 
-type recrawlRequest struct {
-	Server   string `json:"server"`
-	Kind     string `json:"kind"`
-	Backfill bool   `json:"backfill"`
+type crawlCCFSRequest struct {
+	CCFS string `json:"ccfs"`
 }
 
-func (h *Handler) adminRecrawl(c echo.Context) error {
-	if h.adminToken == "" {
-		return echo.NewHTTPError(http.StatusNotFound)
-	}
-	if !strings.HasPrefix(c.Request().Header.Get("Authorization"), "Bearer ") {
-		return echo.NewHTTPError(http.StatusUnauthorized)
-	}
-	token := strings.TrimPrefix(c.Request().Header.Get("Authorization"), "Bearer ")
-	if token != h.adminToken {
-		return echo.NewHTTPError(http.StatusForbidden)
-	}
-
-	var req recrawlRequest
-	if err := c.Bind(&req); err != nil {
+func (h *Handler) crawlCCFS(c echo.Context) error {
+	ccfs, err := readCCFS(c)
+	if err != nil {
 		return err
 	}
-	if req.Kind != "" && req.Kind != crawler.KindProfile && req.Kind != crawler.KindCommunity {
-		return echo.NewHTTPError(http.StatusBadRequest, "invalid kind")
+	if ccfs == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "ccfs is required")
 	}
+	result, err := h.crawler.CrawlCCFS(c.Request().Context(), ccfs)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"status": "indexed",
+		"result": result,
+	})
+}
 
-	query := h.db.WithContext(c.Request().Context()).Model(&model.CrawlCursor{})
-	if req.Server != "" {
-		query = query.Where("server_domain = ?", req.Server)
-	}
-	if req.Kind != "" {
-		query = query.Where("kind = ?", req.Kind)
-	}
-	updates := map[string]any{
-		"last_error":    "",
-		"last_error_at": nil,
-		"fail_count":    0,
-	}
-	if req.Backfill {
-		updates["last_backfill_at"] = nil
-		updates["backfill_until"] = nil
-	}
-	if err := query.Updates(updates).Error; err != nil {
-		if errors.Is(err, gorm.ErrMissingWhereClause) {
-			return echo.NewHTTPError(http.StatusBadRequest, "server or kind is required")
+func readCCFS(c echo.Context) (string, error) {
+	contentType := c.Request().Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "application/json") {
+		var req crawlCCFSRequest
+		if err := c.Bind(&req); err != nil {
+			return "", err
 		}
-		return err
+		return strings.TrimSpace(req.CCFS), nil
 	}
-
-	if h.recrawler != nil {
-		go func() {
-			_ = h.recrawler.CrawlOnce(context.Background())
-		}()
+	if value := strings.TrimSpace(c.FormValue("ccfs")); value != "" {
+		return value, nil
 	}
-	return c.JSON(http.StatusAccepted, map[string]string{"status": "scheduled"})
+	body, err := io.ReadAll(c.Request().Body)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(body)), nil
 }
 
 func parseInt(value string, fallback int) int {

@@ -39,6 +39,15 @@ type Crawler struct {
 	logger *slog.Logger
 }
 
+type ManualCrawlResult struct {
+	Kind         string `json:"kind"`
+	Schema       string `json:"schema"`
+	ID           string `json:"id"`
+	CCKV         string `json:"cckv"`
+	CCFS         string `json:"ccfs"`
+	SourceServer string `json:"sourceServer"`
+}
+
 func New(db *gorm.DB, store Store, client *client.Client, cfg config.Crawl, logger *slog.Logger) *Crawler {
 	if logger == nil {
 		logger = slog.Default()
@@ -128,6 +137,85 @@ func (c *Crawler) DiscoverOnce(ctx context.Context) error {
 	}
 	c.logger.Info("server discovery completed", slog.Int("servers", len(serverDocs)))
 	return nil
+}
+
+func (c *Crawler) CrawlCCFS(ctx context.Context, ccfs string) (ManualCrawlResult, error) {
+	parsed, err := concrnt.ParseCCURI(ccfs)
+	if err != nil {
+		return ManualCrawlResult{}, fmt.Errorf("invalid ccfs: %w", err)
+	}
+	if parsed.Scheme != "ccfs" {
+		return ManualCrawlResult{}, fmt.Errorf("uri must use ccfs scheme")
+	}
+
+	sourceServer, err := c.client.ResolveResourceHost(ctx, ccfs)
+	if err != nil {
+		c.logger.Warn("failed to resolve ccfs source host", slog.String("ccfs", ccfs), slog.String("error", err.Error()))
+		sourceServer = parsed.Owner
+	}
+
+	var sd concrnt.SignedDocument
+	if err := c.client.GetResource(ctx, ccfs, "application/json", nil, &sd); err != nil {
+		return ManualCrawlResult{}, fmt.Errorf("fetch ccfs: %w", err)
+	}
+	if sd.CCFS == nil {
+		sd.CCFS = &ccfs
+	}
+
+	var doc concrnt.Document[json.RawMessage]
+	if err := json.Unmarshal([]byte(sd.Document), &doc); err != nil {
+		return ManualCrawlResult{}, fmt.Errorf("decode signed document: %w", err)
+	}
+
+	for _, schema := range c.cfg.ProfileSchemas {
+		if doc.Schema != schema {
+			continue
+		}
+		user, ok, err := normalize.NormalizeUser(sd, schema, sourceServer, time.Now().UTC())
+		if err != nil {
+			return ManualCrawlResult{}, err
+		}
+		if !ok {
+			return ManualCrawlResult{}, fmt.Errorf("profile schema did not match")
+		}
+		if err := c.store.UpsertUsers(ctx, []normalize.UserDocument{user}); err != nil {
+			return ManualCrawlResult{}, err
+		}
+		return ManualCrawlResult{
+			Kind:         KindProfile,
+			Schema:       schema,
+			ID:           user.ID,
+			CCKV:         user.CCKV,
+			CCFS:         user.CCFS,
+			SourceServer: sourceServer,
+		}, nil
+	}
+
+	for _, schema := range c.cfg.CommunitySchemas {
+		if doc.Schema != schema {
+			continue
+		}
+		community, ok, err := normalize.NormalizeCommunity(sd, schema, sourceServer, time.Now().UTC())
+		if err != nil {
+			return ManualCrawlResult{}, err
+		}
+		if !ok {
+			return ManualCrawlResult{}, fmt.Errorf("community schema did not match")
+		}
+		if err := c.store.UpsertCommunities(ctx, []normalize.CommunityDocument{community}); err != nil {
+			return ManualCrawlResult{}, err
+		}
+		return ManualCrawlResult{
+			Kind:         KindCommunity,
+			Schema:       schema,
+			ID:           community.ID,
+			CCKV:         community.CCKV,
+			CCFS:         community.CCFS,
+			SourceServer: sourceServer,
+		}, nil
+	}
+
+	return ManualCrawlResult{}, fmt.Errorf("unsupported schema: %s", doc.Schema)
 }
 
 func (c *Crawler) fetchKnownServers(ctx context.Context, seed concrnt.WellKnownConcrnt) ([]concrnt.WellKnownConcrnt, error) {
