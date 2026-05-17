@@ -1,4 +1,4 @@
-# concrnt-search
+# concrnt-crawler
 
 Concrnt public records crawler + Meilisearch search API.
 
@@ -15,7 +15,7 @@ docker compose up --build
 Local Go:
 
 ```sh
-CONCRNT_SEARCH_CONFIG=config.local.yaml go run .
+CONCRNT_CRAWLER_CONFIG=config.local.yaml go run .
 ```
 
 `config.local.yaml` は git ignore 済みです。
@@ -24,10 +24,10 @@ CONCRNT_SEARCH_CONFIG=config.local.yaml go run .
 
 Config path:
 
-1. `CONCRNT_SEARCH_CONFIG`
+1. `CONCRNT_CRAWLER_CONFIG`
 2. `config.local.yaml`
 3. `config.yaml`
-4. `/etc/concrnt-search/config.yaml`
+4. `/etc/concrnt-crawler/config.yaml`
 
 Minimal example:
 
@@ -54,7 +54,7 @@ crawl:
     - "https://schema.concrnt.world/t/community.json"
 
 backends:
-  postgresDsn: "postgres://concrnt_search:password@db:5432/concrnt_search?sslmode=disable"
+  postgresDsn: "postgres://concrnt_crawler:password@db:5432/concrnt_crawler?sslmode=disable"
   meiliHost: "http://meilisearch:7700"
   meiliAPIKey: ""
 

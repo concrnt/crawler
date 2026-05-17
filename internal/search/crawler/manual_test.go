@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/concrnt/concrnt"
-	"github.com/concrnt/concrnt-search/internal/search/config"
-	"github.com/concrnt/concrnt-search/internal/search/meili"
-	"github.com/concrnt/concrnt-search/internal/search/normalize"
+	"github.com/concrnt/concrnt-crawler/internal/search/config"
+	"github.com/concrnt/concrnt-crawler/internal/search/meili"
+	"github.com/concrnt/concrnt-crawler/internal/search/normalize"
 	"github.com/concrnt/concrnt/client"
 )
 

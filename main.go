@@ -7,8 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/concrnt/concrnt-search/internal/search/app"
-	searchconfig "github.com/concrnt/concrnt-search/internal/search/config"
+	"github.com/concrnt/concrnt-crawler/internal/search/app"
+	searchconfig "github.com/concrnt/concrnt-crawler/internal/search/config"
 )
 
 var version = "unknown"
@@ -28,7 +28,7 @@ func main() {
 	defer stop()
 
 	if err := app.Run(ctx, cfg, version); err != nil {
-		slog.Error("concrnt-search stopped with error", slog.String("error", err.Error()))
+		slog.Error("concrnt-crawler stopped with error", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 }

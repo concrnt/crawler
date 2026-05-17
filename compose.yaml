@@ -1,5 +1,5 @@
 services:
-  concrnt-search:
+  concrnt-crawler:
     build:
       context: .
       dockerfile: ./Dockerfile
@@ -12,9 +12,9 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - CONCRNT_SEARCH_CONFIG=/etc/concrnt-search/config.yaml
+      - CONCRNT_CRAWLER_CONFIG=/etc/concrnt-crawler/config.yaml
     volumes:
-      - ./config.example.yaml:/etc/concrnt-search/config.yaml:ro
+      - ./config.example.yaml:/etc/concrnt-crawler/config.yaml:ro
     networks:
       - external
       - internal
@@ -23,7 +23,7 @@ services:
     restart: always
     image: postgres:18
     healthcheck:
-      test: "pg_isready -U concrnt_search -d concrnt_search"
+      test: "pg_isready -U concrnt_crawler -d concrnt_crawler"
       interval: 5s
       retries: 20
     volumes:
@@ -32,8 +32,8 @@ services:
       - "5432:5432"
     environment:
       - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=concrnt_search
-      - POSTGRES_USER=concrnt_search
+      - POSTGRES_DB=concrnt_crawler
+      - POSTGRES_USER=concrnt_crawler
     networks:
       - internal
       - external

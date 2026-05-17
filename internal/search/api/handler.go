@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/concrnt/concrnt-search/internal/search/crawler"
-	"github.com/concrnt/concrnt-search/internal/search/meili"
-	"github.com/concrnt/concrnt-search/internal/search/model"
+	"github.com/concrnt/concrnt-crawler/internal/search/crawler"
+	"github.com/concrnt/concrnt-crawler/internal/search/meili"
+	"github.com/concrnt/concrnt-crawler/internal/search/model"
 	"github.com/labstack/echo/v4"
 	meilisearch "github.com/meilisearch/meilisearch-go"
 	"gorm.io/gorm"

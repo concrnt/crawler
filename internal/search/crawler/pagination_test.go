@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/concrnt/concrnt"
-	"github.com/concrnt/concrnt-search/internal/search/config"
+	"github.com/concrnt/concrnt-crawler/internal/search/config"
 )
 
 func TestPageBoundary(t *testing.T) {

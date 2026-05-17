@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/concrnt/concrnt-search/internal/search/model"
+	"github.com/concrnt/concrnt-crawler/internal/search/model"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"

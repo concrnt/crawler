@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	envConfigPath     = "CONCRNT_SEARCH_CONFIG"
-	defaultConfigPath = "/etc/concrnt-search/config.yaml"
+	envConfigPath     = "CONCRNT_CRAWLER_CONFIG"
+	defaultConfigPath = "/etc/concrnt-crawler/config.yaml"
 	localConfigPath   = "config.local.yaml"
 	rootConfigPath    = "config.yaml"
 )

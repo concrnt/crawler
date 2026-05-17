@@ -8,12 +8,12 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/concrnt/concrnt-search/internal/search/api"
-	searchconfig "github.com/concrnt/concrnt-search/internal/search/config"
-	"github.com/concrnt/concrnt-search/internal/search/crawler"
-	"github.com/concrnt/concrnt-search/internal/search/database"
-	"github.com/concrnt/concrnt-search/internal/search/meili"
-	"github.com/concrnt/concrnt-search/internal/search/observability"
+	"github.com/concrnt/concrnt-crawler/internal/search/api"
+	searchconfig "github.com/concrnt/concrnt-crawler/internal/search/config"
+	"github.com/concrnt/concrnt-crawler/internal/search/crawler"
+	"github.com/concrnt/concrnt-crawler/internal/search/database"
+	"github.com/concrnt/concrnt-crawler/internal/search/meili"
+	"github.com/concrnt/concrnt-crawler/internal/search/observability"
 	"github.com/concrnt/concrnt/client"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -22,7 +22,7 @@ import (
 
 func Run(ctx context.Context, cfg searchconfig.Config, version string) error {
 	if cfg.Observability.EnableTrace {
-		cleanup, err := observability.SetupTraceProvider(ctx, cfg.Observability.TraceEndpoint, "concrnt-search", version)
+		cleanup, err := observability.SetupTraceProvider(ctx, cfg.Observability.TraceEndpoint, "concrnt-crawler", version)
 		if err != nil {
 			return fmt.Errorf("setup tracing: %w", err)
 		}
@@ -44,7 +44,7 @@ func Run(ctx context.Context, cfg searchconfig.Config, version string) error {
 	}
 
 	concrntClient := client.New(cfg.Crawl.Seed)
-	concrntClient.SetUserAgent("concrnt-search", version)
+	concrntClient.SetUserAgent("concrnt-crawler", version)
 	concrntClient.GetClient().Timeout = cfg.Crawl.RequestTimeout.Duration()
 
 	searchCrawler := crawler.New(db, searchStore, concrntClient, cfg.Crawl, slog.Default())
@@ -55,7 +55,7 @@ func Run(ctx context.Context, cfg searchconfig.Config, version string) error {
 	e.HidePort = true
 	e.Use(middleware.Recover())
 	if cfg.Observability.EnableTrace {
-		e.Use(otelecho.Middleware("concrnt-search", otelecho.WithSkipper(func(c echo.Context) bool {
+		e.Use(otelecho.Middleware("concrnt-crawler", otelecho.WithSkipper(func(c echo.Context) bool {
 			return c.Path() == "/health"
 		})))
 	}
@@ -72,7 +72,7 @@ func Run(ctx context.Context, cfg searchconfig.Config, version string) error {
 
 	serverErr := make(chan error, 1)
 	go func() {
-		slog.Info("concrnt-search starting", slog.String("listen", cfg.Server.Listen), slog.String("version", version))
+		slog.Info("concrnt-crawler starting", slog.String("listen", cfg.Server.Listen), slog.String("version", version))
 		serverErr <- e.Start(cfg.Server.Listen)
 	}()
 

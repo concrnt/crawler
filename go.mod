@@ -1,9 +1,9 @@
-module github.com/concrnt/concrnt-search
+module github.com/concrnt/concrnt-crawler
 
 go 1.25.1
 
 require (
-	github.com/concrnt/concrnt v0.0.0
+	github.com/concrnt/concrnt v1.10.0-beta0
 	github.com/labstack/echo/v4 v4.13.4
 	github.com/meilisearch/meilisearch-go v0.30.0
 	go.opentelemetry.io/contrib/instrumentation/github.com/labstack/echo/otelecho v0.64.0
@@ -133,5 +133,3 @@ require (
 	google.golang.org/protobuf v1.36.10 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
-
-replace github.com/concrnt/concrnt => ./references/concrnt

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/concrnt/concrnt"
-	"github.com/concrnt/concrnt-search/internal/search/normalize"
+	"github.com/concrnt/concrnt-crawler/internal/search/normalize"
 	meilisearch "github.com/meilisearch/meilisearch-go"
 )
 
