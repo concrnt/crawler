@@ -11,6 +11,8 @@ import (
 const (
 	envConfigPath     = "CONCRNT_SEARCH_CONFIG"
 	defaultConfigPath = "/etc/concrnt-search/config.yaml"
+	localConfigPath   = "config.local.yaml"
+	rootConfigPath    = "config.yaml"
 )
 
 const (
@@ -110,6 +112,12 @@ func Default() Config {
 func LoadFromEnv() (Config, error) {
 	path := os.Getenv(envConfigPath)
 	if path == "" {
+		if _, err := os.Stat(localConfigPath); err == nil {
+			return Load(localConfigPath)
+		}
+		if _, err := os.Stat(rootConfigPath); err == nil {
+			return Load(rootConfigPath)
+		}
 		path = defaultConfigPath
 	}
 	return Load(path)

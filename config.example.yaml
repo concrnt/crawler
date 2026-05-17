@@ -20,7 +20,7 @@ crawl:
     - "https://schema.concrnt.world/t/community.json"
 
 backends:
-  postgresDsn: "postgres://concrnt_search:password@postgres:5432/concrnt_search?sslmode=disable"
+  postgresDsn: "postgres://concrnt_search:password@db:5432/concrnt_search?sslmode=disable"
   meiliHost: "http://meilisearch:7700"
   meiliAPIKey: ""
 

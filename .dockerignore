@@ -1,0 +1,6 @@
+.git
+.codex
+.agents
+config.local.yaml
+compose.override.yaml
+tmp

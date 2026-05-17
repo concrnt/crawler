@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"context"
@@ -6,9 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/concrnt/concrnt-search/internal/search/api"
@@ -23,46 +20,27 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/github.com/labstack/echo/otelecho"
 )
 
-var version = "unknown"
-
-func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	})))
-
-	cfg, err := searchconfig.LoadFromEnv()
-	if err != nil {
-		slog.Error("failed to load config", slog.String("error", err.Error()))
-		os.Exit(1)
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
+func Run(ctx context.Context, cfg searchconfig.Config, version string) error {
 	if cfg.Observability.EnableTrace {
 		cleanup, err := observability.SetupTraceProvider(ctx, cfg.Observability.TraceEndpoint, "concrnt-search", version)
 		if err != nil {
-			slog.Error("failed to setup tracing", slog.String("error", err.Error()))
-			os.Exit(1)
+			return fmt.Errorf("setup tracing: %w", err)
 		}
 		defer cleanup()
 	}
 
 	db, err := database.OpenPostgres(cfg.Backends.PostgresDsn)
 	if err != nil {
-		slog.Error("failed to connect postgres", slog.String("error", err.Error()))
-		os.Exit(1)
+		return fmt.Errorf("connect postgres: %w", err)
 	}
 	if err := database.Migrate(db); err != nil {
-		slog.Error("failed to migrate postgres", slog.String("error", err.Error()))
-		os.Exit(1)
+		return fmt.Errorf("migrate postgres: %w", err)
 	}
 
 	meiliClient := meili.NewClient(cfg.Backends.MeiliHost, cfg.Backends.MeiliAPIKey)
 	searchStore := meili.New(meiliClient, 2*time.Minute, slog.Default())
 	if err := searchStore.EnsureIndexes(ctx); err != nil {
-		slog.Error("failed to setup meilisearch indexes", slog.String("error", err.Error()))
-		os.Exit(1)
+		return fmt.Errorf("setup meilisearch indexes: %w", err)
 	}
 
 	concrntClient := client.New(cfg.Crawl.Seed)
@@ -102,15 +80,14 @@ func main() {
 	case <-ctx.Done():
 	case err := <-serverErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("http server failed", slog.String("error", err.Error()))
-			os.Exit(1)
+			return fmt.Errorf("http server failed: %w", err)
 		}
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := e.Shutdown(shutdownCtx); err != nil {
-		fmt.Fprintln(os.Stderr, "failed to shutdown server:", err)
-		os.Exit(1)
+		return fmt.Errorf("shutdown server: %w", err)
 	}
+	return nil
 }
