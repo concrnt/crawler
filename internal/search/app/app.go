@@ -54,6 +54,7 @@ func Run(ctx context.Context, cfg searchconfig.Config, version string) error {
 	e.HideBanner = true
 	e.HidePort = true
 	e.Use(middleware.Recover())
+	e.Use(middleware.CORS())
 	if cfg.Observability.EnableTrace {
 		e.Use(otelecho.Middleware("concrnt-crawler", otelecho.WithSkipper(func(c echo.Context) bool {
 			return c.Path() == "/health"
