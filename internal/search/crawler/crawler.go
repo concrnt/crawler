@@ -62,12 +62,16 @@ func New(db *gorm.DB, store Store, client *client.Client, cfg config.Crawl, logg
 }
 
 func (c *Crawler) Start(ctx context.Context) {
-	go c.discoveryLoop(ctx)
-	go c.crawlLoop(ctx)
+	go func() {
+		// populate server_states before the first crawl; otherwise the first
+		// crawl finds no servers and nothing happens until the next tick
+		c.runDiscovery(ctx)
+		go c.discoveryLoop(ctx)
+		c.crawlLoop(ctx)
+	}()
 }
 
 func (c *Crawler) discoveryLoop(ctx context.Context) {
-	c.runDiscovery(ctx)
 	ticker := time.NewTicker(c.cfg.KnownServersInterval.Duration())
 	defer ticker.Stop()
 	for {
@@ -101,9 +105,12 @@ func (c *Crawler) runDiscovery(ctx context.Context) {
 }
 
 func (c *Crawler) runCrawl(ctx context.Context) {
+	started := time.Now()
 	if err := c.CrawlOnce(ctx); err != nil {
-		c.logger.Warn("crawl failed", slog.String("error", err.Error()))
+		c.logger.Warn("crawl failed", slog.String("error", err.Error()), slog.String("elapsed", time.Since(started).Round(time.Millisecond).String()))
+		return
 	}
+	c.logger.Info("crawl completed", slog.String("elapsed", time.Since(started).Round(time.Millisecond).String()))
 }
 
 func (c *Crawler) DiscoverOnce(ctx context.Context) error {
@@ -322,6 +329,7 @@ func (c *Crawler) CrawlOnce(ctx context.Context) error {
 		return err
 	}
 	if len(servers) == 0 {
+		c.logger.Warn("no servers to crawl", slog.String("layer", c.cfg.Layer))
 		return nil
 	}
 
@@ -389,6 +397,7 @@ func (c *Crawler) crawlServer(ctx context.Context, state model.ServerState) erro
 		return nil
 	}
 
+	c.logger.Info("server crawl started", slog.String("server", state.Domain))
 	var joined error
 	for _, schema := range c.cfg.ProfileSchemas {
 		if err := c.crawlScope(ctx, state.Domain, KindProfile, schema); err != nil {
@@ -412,6 +421,11 @@ func (c *Crawler) crawlServer(ctx context.Context, state model.ServerState) erro
 	}
 	if err := c.db.WithContext(ctx).Model(&model.ServerState{}).Where("domain = ?", state.Domain).Updates(updates).Error; err != nil {
 		return err
+	}
+	if joined != nil {
+		c.logger.Warn("server crawl failed", slog.String("server", state.Domain), slog.String("elapsed", finished.Sub(now).Round(time.Millisecond).String()), slog.String("error", joined.Error()))
+	} else {
+		c.logger.Info("server crawl completed", slog.String("server", state.Domain), slog.String("elapsed", finished.Sub(now).Round(time.Millisecond).String()))
 	}
 	return joined
 }
