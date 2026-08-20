@@ -512,10 +512,9 @@ func (c *Crawler) runBackfill(ctx context.Context, cursor *model.CrawlCursor) er
 		return err
 	}
 
-	var previousBoundary *time.Time
 	for page := 0; page < c.cfg.MaxPagesPerRun; page++ {
 		until := *cursor.BackfillUntil
-		docs, err := c.client.Query(ctx, cursor.ServerDomain, client.QueryParams{
+		result, err := c.client.Query(ctx, cursor.ServerDomain, client.QueryParams{
 			Prefix: c.cfg.Prefix,
 			Schema: cursor.Schema,
 			Until:  &until,
@@ -525,31 +524,26 @@ func (c *Crawler) runBackfill(ctx context.Context, cursor *model.CrawlCursor) er
 		if err != nil {
 			return err
 		}
-		if err := c.upsertPage(ctx, cursor.Kind, cursor.Schema, cursor.ServerDomain, docs); err != nil {
+		if err := c.upsertPage(ctx, cursor.Kind, cursor.Schema, cursor.ServerDomain, result.Items); err != nil {
 			return err
 		}
-		if len(docs) == 0 {
+		// CIP-5: next is computed before read-access filtering, so items may be
+		// short or empty while next is still non-nil. next == nil is the only
+		// end-of-pages signal.
+		if result.Next == nil {
 			return c.completeBackfill(ctx, cursor, started)
 		}
-
-		boundary, err := PageBoundary(docs, "desc")
-		if err != nil {
-			c.logger.Warn("backfill page has no usable createdAt", slog.String("server", cursor.ServerDomain), slog.String("schema", cursor.Schema), slog.String("error", err.Error()))
-			if len(docs) < c.cfg.PageLimit {
-				return c.completeBackfill(ctx, cursor, started)
-			}
-			return err
+		// since/until are inclusive and next is the sort key of the first row
+		// past the window, so echo it back unmodified. When more than one page
+		// of rows share the same createdAt the cursor cannot advance
+		// (server-side limitation): step past that instant so the rest of the
+		// history is still reached, giving up only the rows at that createdAt
+		// (1µs: server timestamps are stored with microsecond precision).
+		nextUntil := *result.Next
+		if !nextUntil.Before(until) {
+			c.logger.Warn("backfill pagination did not progress; skipping remaining rows at this createdAt", slog.String("server", cursor.ServerDomain), slog.String("schema", cursor.Schema), slog.Time("next", *result.Next))
+			nextUntil = until.Add(-time.Microsecond)
 		}
-		if previousBoundary != nil && !boundary.Before(*previousBoundary) {
-			c.logger.Warn("backfill pagination did not progress", slog.String("server", cursor.ServerDomain), slog.String("schema", cursor.Schema), slog.Time("boundary", boundary))
-			return c.markCursorSuccess(ctx, cursor)
-		}
-
-		if len(docs) < c.cfg.PageLimit {
-			return c.completeBackfill(ctx, cursor, started)
-		}
-
-		nextUntil := boundary.Add(-time.Nanosecond)
 		cursor.BackfillUntil = &nextUntil
 		if err := c.db.WithContext(ctx).Model(cursor).Updates(map[string]any{
 			"backfill_until":   nextUntil,
@@ -560,7 +554,6 @@ func (c *Crawler) runBackfill(ctx context.Context, cursor *model.CrawlCursor) er
 		}).Error; err != nil {
 			return err
 		}
-		previousBoundary = &boundary
 	}
 
 	c.logger.Warn("backfill reached maxPagesPerRun", slog.String("server", cursor.ServerDomain), slog.String("schema", cursor.Schema), slog.Int("maxPagesPerRun", c.cfg.MaxPagesPerRun))
@@ -597,7 +590,7 @@ func (c *Crawler) runIncremental(ctx context.Context, cursor *model.CrawlCursor)
 	until := started
 
 	for page := 0; page < c.cfg.MaxPagesPerRun; page++ {
-		docs, err := c.client.Query(ctx, cursor.ServerDomain, client.QueryParams{
+		result, err := c.client.Query(ctx, cursor.ServerDomain, client.QueryParams{
 			Prefix: c.cfg.Prefix,
 			Schema: cursor.Schema,
 			Since:  &since,
@@ -608,22 +601,16 @@ func (c *Crawler) runIncremental(ctx context.Context, cursor *model.CrawlCursor)
 		if err != nil {
 			return err
 		}
-		if err := c.upsertPage(ctx, cursor.Kind, cursor.Schema, cursor.ServerDomain, docs); err != nil {
+		if err := c.upsertPage(ctx, cursor.Kind, cursor.Schema, cursor.ServerDomain, result.Items); err != nil {
 			return err
 		}
-		if len(docs) < c.cfg.PageLimit {
+		if result.Next == nil {
 			return c.completeIncremental(ctx, cursor, started)
 		}
-
-		boundary, err := PageBoundary(docs, "asc")
-		if err != nil {
-			c.logger.Warn("incremental page has no usable createdAt", slog.String("server", cursor.ServerDomain), slog.String("schema", cursor.Schema), slog.String("error", err.Error()))
-			return err
-		}
-		nextSince := boundary.Add(time.Nanosecond)
+		nextSince := *result.Next
 		if !nextSince.After(since) {
-			c.logger.Warn("incremental pagination did not progress", slog.String("server", cursor.ServerDomain), slog.String("schema", cursor.Schema), slog.Time("boundary", boundary))
-			return c.markCursorSuccess(ctx, cursor)
+			c.logger.Warn("incremental pagination did not progress; skipping remaining rows at this createdAt", slog.String("server", cursor.ServerDomain), slog.String("schema", cursor.Schema), slog.Time("next", *result.Next))
+			nextSince = since.Add(time.Microsecond)
 		}
 		since = nextSince
 	}
@@ -694,30 +681,6 @@ func (c *Crawler) upsertPage(ctx context.Context, kind string, schema string, so
 	default:
 		return fmt.Errorf("unknown crawl kind: %s", kind)
 	}
-}
-
-func PageBoundary(docs []concrnt.SignedDocument, order string) (time.Time, error) {
-	var boundary time.Time
-	for _, sd := range docs {
-		createdAt, err := normalize.CreatedAt(sd)
-		if err != nil || createdAt.IsZero() {
-			continue
-		}
-		if boundary.IsZero() {
-			boundary = createdAt
-			continue
-		}
-		if order == "asc" && createdAt.After(boundary) {
-			boundary = createdAt
-		}
-		if order == "desc" && createdAt.Before(boundary) {
-			boundary = createdAt
-		}
-	}
-	if boundary.IsZero() {
-		return time.Time{}, fmt.Errorf("no createdAt found")
-	}
-	return boundary, nil
 }
 
 func (c *Crawler) markCursorFailure(ctx context.Context, cursorID uint, err error) {

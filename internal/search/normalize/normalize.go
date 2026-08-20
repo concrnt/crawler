@@ -193,11 +193,3 @@ func NormalizeCommunity(sd concrnt.SignedDocument, expectedSchema string, source
 		IndexedAt:    indexedAt,
 	}, true, nil
 }
-
-func CreatedAt(sd concrnt.SignedDocument) (time.Time, error) {
-	var doc concrnt.Document[json.RawMessage]
-	if err := json.Unmarshal([]byte(sd.Document), &doc); err != nil {
-		return time.Time{}, err
-	}
-	return doc.CreatedAt, nil
-}

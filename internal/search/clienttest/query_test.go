@@ -17,6 +17,7 @@ func TestClientQueryUsesDiscoveredEndpoint(t *testing.T) {
 	const schema = "https://schema.concrnt.world/p/main.json"
 	createdAt := time.Date(2026, 5, 15, 1, 2, 3, 0, time.UTC)
 	signed := signedDocument(t, schema, createdAt)
+	next := createdAt.Add(time.Minute)
 
 	cl := client.New(domain)
 	cl.GetClient().Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -41,7 +42,7 @@ func TestClientQueryUsesDiscoveredEndpoint(t *testing.T) {
 			if r.URL.Query().Get("limit") != "100" || r.URL.Query().Get("order") != "asc" {
 				t.Errorf("pagination query mismatch: %s", r.URL.RawQuery)
 			}
-			return jsonResponse(t, []concrnt.SignedDocument{signed})
+			return jsonResponse(t, concrnt.QueryResult{Items: []concrnt.SignedDocument{signed}, Prev: &createdAt, Next: &next})
 		default:
 			return &http.Response{
 				StatusCode: http.StatusNotFound,
@@ -59,8 +60,11 @@ func TestClientQueryUsesDiscoveredEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Document != signed.Document {
+	if len(got.Items) != 1 || got.Items[0].Document != signed.Document {
 		t.Fatalf("unexpected query results: %+v", got)
+	}
+	if got.Next == nil || !got.Next.Equal(next) {
+		t.Fatalf("next cursor mismatch: %v", got.Next)
 	}
 }
 

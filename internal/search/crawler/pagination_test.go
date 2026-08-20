@@ -10,40 +10,6 @@ import (
 	"github.com/concrnt/concrnt-crawler/internal/search/config"
 )
 
-func TestPageBoundary(t *testing.T) {
-	base := time.Date(2026, 5, 15, 1, 0, 0, 0, time.UTC)
-	docs := []concrnt.SignedDocument{
-		testSignedDocument(t, base.Add(2*time.Minute)),
-		testSignedDocument(t, base),
-		testSignedDocument(t, base.Add(time.Minute)),
-	}
-
-	asc, err := PageBoundary(docs, "asc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !asc.Equal(base.Add(2 * time.Minute)) {
-		t.Fatalf("asc boundary mismatch: got %s", asc)
-	}
-
-	desc, err := PageBoundary(docs, "desc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !desc.Equal(base) {
-		t.Fatalf("desc boundary mismatch: got %s", desc)
-	}
-
-	nextBackfillUntil := desc.Add(-time.Nanosecond)
-	if !nextBackfillUntil.Before(desc) {
-		t.Fatal("backfill cursor must move backward")
-	}
-	nextIncrementalSince := asc.Add(time.Nanosecond)
-	if !nextIncrementalSince.After(asc) {
-		t.Fatal("incremental cursor must move forward")
-	}
-}
-
 func TestShouldBackoff(t *testing.T) {
 	now := time.Date(2026, 5, 15, 1, 0, 0, 0, time.UTC)
 	last := now.Add(-4 * time.Minute)
