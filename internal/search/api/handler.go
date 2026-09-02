@@ -60,12 +60,12 @@ func (h *Handler) searchUsers(c echo.Context) error {
 		"sourceServer": true,
 		"owner":        true,
 	})
-	// must stay in sync with the sortable attributes in meili.EnsureIndexes
+	// sortable maps must stay in sync with the sortable attributes in meili.EnsureIndexes
 	return h.search(c, meili.UsersIndex, filter, map[string]bool{
 		"createdAt": true,
 		"indexedAt": true,
 		"username":  true,
-	})
+	}, "createdAt:desc")
 }
 
 func (h *Handler) searchCommunities(c echo.Context) error {
@@ -80,7 +80,7 @@ func (h *Handler) searchCommunities(c echo.Context) error {
 		"createdAt": true,
 		"indexedAt": true,
 		"name":      true,
-	})
+	}, "createdAt:desc")
 }
 
 func (h *Handler) searchServers(c echo.Context) error {
@@ -92,10 +92,10 @@ func (h *Handler) searchServers(c echo.Context) error {
 	return h.search(c, meili.ServersIndex, filter, map[string]bool{
 		"lastSeenAt":    true,
 		"lastCrawledAt": true,
-	})
+	}, "")
 }
 
-func (h *Handler) search(c echo.Context, indexUID string, filter string, sortable map[string]bool) error {
+func (h *Handler) search(c echo.Context, indexUID string, filter string, sortable map[string]bool, defaultSort string) error {
 	limit := parseInt(c.QueryParam("limit"), 20)
 	if limit < 1 {
 		limit = 20
@@ -108,7 +108,11 @@ func (h *Handler) search(c echo.Context, indexUID string, filter string, sortabl
 		offset = 0
 	}
 	query := c.QueryParam("q")
-	sort, err := meili.BuildSort(c.QueryParam("sort"), sortable)
+	sortParam := c.QueryParam("sort")
+	if sortParam == "" {
+		sortParam = defaultSort
+	}
+	sort, err := meili.BuildSort(sortParam, sortable)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
