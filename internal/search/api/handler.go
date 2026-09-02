@@ -17,7 +17,7 @@ import (
 )
 
 type SearchStore interface {
-	Search(ctx context.Context, indexUID string, query string, limit int64, offset int64, filter string) (*meilisearch.SearchResponse, error)
+	Search(ctx context.Context, indexUID string, query string, limit int64, offset int64, filter string, sort []string) (*meilisearch.SearchResponse, error)
 	Stats(ctx context.Context) (*meilisearch.Stats, error)
 }
 
@@ -60,7 +60,12 @@ func (h *Handler) searchUsers(c echo.Context) error {
 		"sourceServer": true,
 		"owner":        true,
 	})
-	return h.search(c, meili.UsersIndex, filter)
+	// must stay in sync with the sortable attributes in meili.EnsureIndexes
+	return h.search(c, meili.UsersIndex, filter, map[string]bool{
+		"createdAt": true,
+		"indexedAt": true,
+		"username":  true,
+	})
 }
 
 func (h *Handler) searchCommunities(c echo.Context) error {
@@ -71,7 +76,11 @@ func (h *Handler) searchCommunities(c echo.Context) error {
 		"sourceServer": true,
 		"owner":        true,
 	})
-	return h.search(c, meili.CommunitiesIndex, filter)
+	return h.search(c, meili.CommunitiesIndex, filter, map[string]bool{
+		"createdAt": true,
+		"indexedAt": true,
+		"name":      true,
+	})
 }
 
 func (h *Handler) searchServers(c echo.Context) error {
@@ -80,10 +89,13 @@ func (h *Handler) searchServers(c echo.Context) error {
 	}, map[string]bool{
 		"status": true,
 	})
-	return h.search(c, meili.ServersIndex, filter)
+	return h.search(c, meili.ServersIndex, filter, map[string]bool{
+		"lastSeenAt":    true,
+		"lastCrawledAt": true,
+	})
 }
 
-func (h *Handler) search(c echo.Context, indexUID string, filter string) error {
+func (h *Handler) search(c echo.Context, indexUID string, filter string, sortable map[string]bool) error {
 	limit := parseInt(c.QueryParam("limit"), 20)
 	if limit < 1 {
 		limit = 20
@@ -96,8 +108,12 @@ func (h *Handler) search(c echo.Context, indexUID string, filter string) error {
 		offset = 0
 	}
 	query := c.QueryParam("q")
+	sort, err := meili.BuildSort(c.QueryParam("sort"), sortable)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
 
-	resp, err := h.store.Search(c.Request().Context(), indexUID, query, int64(limit), int64(offset), filter)
+	resp, err := h.store.Search(c.Request().Context(), indexUID, query, int64(limit), int64(offset), filter, sort)
 	if err != nil {
 		return err
 	}

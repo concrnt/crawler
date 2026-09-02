@@ -147,13 +147,16 @@ func (s *Store) UpsertCommunities(ctx context.Context, docs []normalize.Communit
 	return s.waitTask(ctx, task, err)
 }
 
-func (s *Store) Search(ctx context.Context, indexUID string, query string, limit int64, offset int64, filter string) (*meilisearch.SearchResponse, error) {
+func (s *Store) Search(ctx context.Context, indexUID string, query string, limit int64, offset int64, filter string, sort []string) (*meilisearch.SearchResponse, error) {
 	req := &meilisearch.SearchRequest{
 		Limit:  limit,
 		Offset: offset,
 	}
 	if filter != "" {
 		req.Filter = filter
+	}
+	if len(sort) > 0 {
+		req.Sort = sort
 	}
 	return s.client.Index(indexUID).SearchWithContext(ctx, query, req)
 }
@@ -228,6 +231,25 @@ func BuildFilter(params map[string]string, allowed map[string]bool) string {
 		parts = append(parts, fmt.Sprintf("%s = \"%s\"", key, escapeFilterValue(value)))
 	}
 	return strings.Join(parts, " AND ")
+}
+
+// BuildSort validates a "field:asc|desc" expression ("field" alone means desc)
+// against the index's sortable attributes and returns it in Meilisearch form.
+func BuildSort(param string, allowed map[string]bool) ([]string, error) {
+	if param == "" {
+		return nil, nil
+	}
+	field, direction, hasDirection := strings.Cut(param, ":")
+	if !hasDirection {
+		direction = "desc"
+	}
+	if !allowed[field] {
+		return nil, fmt.Errorf("unsupported sort field: %s", field)
+	}
+	if direction != "asc" && direction != "desc" {
+		return nil, fmt.Errorf("unsupported sort direction: %s", direction)
+	}
+	return []string{field + ":" + direction}, nil
 }
 
 func escapeFilterValue(value string) string {
