@@ -46,19 +46,16 @@ type ServerState struct {
 	Disabled      bool
 }
 
-type CrawlCursor struct {
-	ID                uint   `gorm:"primaryKey"`
-	ServerDomain      string `gorm:"type:text;index:idx_cursor_scope,unique"`
-	Kind              string `gorm:"type:text;index:idx_cursor_scope,unique"`
-	Schema            string `gorm:"type:text;index:idx_cursor_scope,unique"`
-	Prefix            string `gorm:"type:text;index:idx_cursor_scope,unique"`
-	IncrementalSince  *time.Time
-	BackfillUntil     *time.Time
-	LastBackfillAt    *time.Time
-	LastIncrementalAt *time.Time
-	LastStartedAt     *time.Time
-	LastFinishedAt    *time.Time
-	LastErrorAt       *time.Time
-	LastError         string `gorm:"type:text"`
-	FailCount         int
+// ReplicationCursor is the per-server position in the CIP-16 replication
+// feed. CursorAt only ever holds values taken from the server's own cursors
+// (prev/next, i.e. commit receipt time), never the crawler's clock.
+type ReplicationCursor struct {
+	ServerDomain   string `gorm:"primaryKey;type:text"`
+	CursorAt       *time.Time
+	CaughtUpAt     *time.Time
+	LastStartedAt  *time.Time
+	LastFinishedAt *time.Time
+	LastErrorAt    *time.Time
+	LastError      string `gorm:"type:text"`
+	FailCount      int
 }

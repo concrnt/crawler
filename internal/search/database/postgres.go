@@ -30,6 +30,6 @@ func OpenPostgres(dsn string) (*gorm.DB, error) {
 func Migrate(db *gorm.DB) error {
 	return db.AutoMigrate(
 		&model.ServerState{},
-		&model.CrawlCursor{},
+		&model.ReplicationCursor{},
 	)
 }

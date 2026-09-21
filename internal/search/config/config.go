@@ -21,6 +21,18 @@ const (
 	DefaultCommunitySchema = "https://schema.concrnt.world/t/community.json"
 )
 
+// DefaultPostSchemas are the world message schemas indexed as posts.
+var DefaultPostSchemas = []string{
+	"https://schema.concrnt.world/m/markdown.json",
+	"https://schema.concrnt.world/m/reply.json",
+	"https://schema.concrnt.world/m/reroute.json",
+	"https://schema.concrnt.world/m/plaintext.json",
+	"https://schema.concrnt.world/m/media.json",
+	"https://schema.concrnt.world/m/gfm.json",
+	"https://schema.concrnt.world/m/mfm.json",
+	"https://schema.concrnt.world/m/cfm.json",
+}
+
 type Duration time.Duration
 
 func (d Duration) Duration() time.Duration {
@@ -62,7 +74,6 @@ type Server struct {
 type Crawl struct {
 	Seed                 string   `yaml:"seed"`
 	Layer                string   `yaml:"layer"`
-	Prefix               string   `yaml:"prefix"`
 	KnownServersInterval Duration `yaml:"knownServersInterval"`
 	IncrementalInterval  Duration `yaml:"incrementalInterval"`
 	RequestTimeout       Duration `yaml:"requestTimeout"`
@@ -73,6 +84,7 @@ type Crawl struct {
 	MaxPagesPerRun       int      `yaml:"maxPagesPerRun"`
 	ProfileSchemas       []string `yaml:"profileSchemas"`
 	CommunitySchemas     []string `yaml:"communitySchemas"`
+	PostSchemas          []string `yaml:"postSchemas"`
 }
 
 type Backends struct {
@@ -92,17 +104,17 @@ func Default() Config {
 			Listen: ":8080",
 		},
 		Crawl: Crawl{
-			Prefix:               "cckv://",
 			KnownServersInterval: Duration(10 * time.Minute),
 			IncrementalInterval:  Duration(15 * time.Minute),
 			RequestTimeout:       Duration(10 * time.Second),
 			GlobalConcurrency:    8,
 			PerServerConcurrency: 1,
 			PageLimit:            100,
-			Overlap:              Duration(2 * time.Minute),
+			Overlap:              Duration(10 * time.Second),
 			MaxPagesPerRun:       1000,
 			ProfileSchemas:       []string{DefaultProfileSchema},
 			CommunitySchemas:     []string{DefaultCommunitySchema},
+			PostSchemas:          append([]string(nil), DefaultPostSchemas...),
 		},
 		Backends: Backends{
 			MeiliHost: "http://meilisearch:7700",
@@ -149,9 +161,6 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("crawl.seed is required")
 	}
 	c.Crawl.Layer = strings.TrimSpace(c.Crawl.Layer)
-	if c.Crawl.Prefix == "" {
-		c.Crawl.Prefix = "cckv://"
-	}
 	if c.Crawl.KnownServersInterval.Duration() <= 0 {
 		c.Crawl.KnownServersInterval = Duration(10 * time.Minute)
 	}
@@ -184,6 +193,9 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Crawl.CommunitySchemas) == 0 {
 		c.Crawl.CommunitySchemas = []string{DefaultCommunitySchema}
+	}
+	if len(c.Crawl.PostSchemas) == 0 {
+		c.Crawl.PostSchemas = append([]string(nil), DefaultPostSchemas...)
 	}
 	if c.Backends.PostgresDsn == "" {
 		return fmt.Errorf("backends.postgresDsn is required")

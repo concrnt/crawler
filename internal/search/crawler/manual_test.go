@@ -67,9 +67,56 @@ func TestCrawlCCFSIndexesProfile(t *testing.T) {
 	}
 }
 
+func TestCrawlCCFSIndexesPost(t *testing.T) {
+	const domain = "manual.test"
+
+	sd := testPostDocument(t, "cckv://con012345678901234567890123456789012345678/concrnt.world/profiles/main/posts/p1", "hello world", time.Date(2026, 5, 15, 1, 0, 0, 0, time.UTC))
+	// a domain-owned ccfs resolves to its host without an entity lookup
+	ccfs := "ccfs://manual.test/concrnt/p1"
+	sd.CCFS = &ccfs
+	store := &manualStore{}
+	cl := client.New(domain)
+	cl.GetClient().Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/.well-known/concrnt":
+			return jsonResponse(t, concrnt.WellKnownConcrnt{
+				Domain: domain,
+				Endpoints: map[string]string{
+					"net.concrnt.core.resolve": "/resolve?uri={uri}",
+				},
+			})
+		case "/resolve":
+			return jsonResponse(t, sd)
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("not found")),
+				Header:     make(http.Header),
+			}, nil
+		}
+	})
+
+	c := New(nil, store, cl, config.Default().Crawl, nil)
+	result, err := c.CrawlCCFS(context.Background(), ccfs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind != KindPost || result.CCFS != ccfs || result.SourceServer != domain {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(store.posts) != 1 || store.posts[0].Body != "hello world" {
+		t.Fatalf("expected one post upsert with body, got %+v", store.posts)
+	}
+}
+
+// manualStore records every store call in order so tests can assert that
+// deletes are applied after the upserts that precede them in the log.
 type manualStore struct {
 	users       []normalize.UserDocument
 	communities []normalize.CommunityDocument
+	posts       []normalize.PostDocument
+	deletes     []meili.DeleteSpec
+	calls       []string
 }
 
 func (s *manualStore) UpsertServers(context.Context, []meili.ServerDocument) error {
@@ -78,11 +125,25 @@ func (s *manualStore) UpsertServers(context.Context, []meili.ServerDocument) err
 
 func (s *manualStore) UpsertUsers(_ context.Context, docs []normalize.UserDocument) error {
 	s.users = append(s.users, docs...)
+	s.calls = append(s.calls, "users")
 	return nil
 }
 
 func (s *manualStore) UpsertCommunities(_ context.Context, docs []normalize.CommunityDocument) error {
 	s.communities = append(s.communities, docs...)
+	s.calls = append(s.calls, "communities")
+	return nil
+}
+
+func (s *manualStore) UpsertPosts(_ context.Context, docs []normalize.PostDocument) error {
+	s.posts = append(s.posts, docs...)
+	s.calls = append(s.calls, "posts")
+	return nil
+}
+
+func (s *manualStore) DeleteRecords(_ context.Context, indexUID string, spec meili.DeleteSpec) error {
+	s.deletes = append(s.deletes, spec)
+	s.calls = append(s.calls, "delete:"+indexUID)
 	return nil
 }
 

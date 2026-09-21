@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/concrnt/concrnt"
@@ -31,6 +32,10 @@ type CommunityValue struct {
 	Banner      string `json:"banner"`
 }
 
+type PostValue struct {
+	Body string `json:"body"`
+}
+
 type UserDocument struct {
 	ID           string         `json:"id"`
 	Type         string         `json:"type"`
@@ -46,6 +51,7 @@ type UserDocument struct {
 	Banner       string         `json:"banner"`
 	Subprofiles  []string       `json:"subprofiles"`
 	Badges       []ProfileBadge `json:"badges"`
+	Ancestors    []string       `json:"ancestors"`
 	CreatedAt    time.Time      `json:"createdAt"`
 	IndexedAt    time.Time      `json:"indexedAt"`
 }
@@ -63,16 +69,36 @@ type CommunityDocument struct {
 	Description  string    `json:"description"`
 	Icon         string    `json:"icon"`
 	Banner       string    `json:"banner"`
+	Ancestors    []string  `json:"ancestors"`
 	CreatedAt    time.Time `json:"createdAt"`
 	IndexedAt    time.Time `json:"indexedAt"`
 }
 
+// PostDocument is a world message record. Body is the searchable text; Value
+// keeps the whole record value so a search hit can be rendered as-is.
+type PostDocument struct {
+	ID           string          `json:"id"`
+	Type         string          `json:"type"`
+	CCKV         string          `json:"cckv"`
+	CCFS         string          `json:"ccfs,omitempty"`
+	Author       string          `json:"author"`
+	Owner        string          `json:"owner"`
+	SourceServer string          `json:"sourceServer"`
+	Schema       string          `json:"schema"`
+	Body         string          `json:"body"`
+	Value        json.RawMessage `json:"value"`
+	Ancestors    []string        `json:"ancestors"`
+	CreatedAt    time.Time       `json:"createdAt"`
+	IndexedAt    time.Time       `json:"indexedAt"`
+}
+
 type ParsedDocument struct {
-	Document concrnt.Document[json.RawMessage]
-	CCKV     string
-	CCFS     string
-	Owner    string
-	ID       string
+	Document  concrnt.Document[json.RawMessage]
+	CCKV      string
+	CCFS      string
+	Owner     string
+	ID        string
+	Ancestors []string
 }
 
 func EncodeCCKV(cckv string) string {
@@ -95,12 +121,39 @@ func DecodeMeiliID(encoded string) (string, error) {
 	return string(decoded), nil
 }
 
+// Ancestors lists every proper ancestor key of a cckv URI, root first:
+// cckv://o/a/b/c -> [cckv://o, cckv://o/a, cckv://o/a/b]. A range delete
+// (CIP-4 "key/*") removes exactly the documents that carry base in here.
+func Ancestors(cckv string) []string {
+	parsed, err := concrnt.ParseCCURI(cckv)
+	if err != nil || parsed.Scheme != "cckv" || parsed.Owner == "" {
+		return []string{}
+	}
+	key := strings.Trim(parsed.Key, "/")
+	if key == "" {
+		return []string{}
+	}
+	root := concrnt.ComposeCCURI("cckv", parsed.Owner, "")
+	segments := strings.Split(key, "/")
+	out := make([]string, 0, len(segments))
+	out = append(out, root)
+	for i := 1; i < len(segments); i++ {
+		out = append(out, root+"/"+strings.Join(segments[:i], "/"))
+	}
+	return out
+}
+
 func ParseSignedDocument(sd concrnt.SignedDocument, expectedSchema string) (ParsedDocument, bool, error) {
 	var doc concrnt.Document[json.RawMessage]
 	if err := json.Unmarshal([]byte(sd.Document), &doc); err != nil {
 		return ParsedDocument{}, false, fmt.Errorf("decode signed document: %w", err)
 	}
 	if doc.Schema != expectedSchema {
+		return ParsedDocument{}, false, nil
+	}
+	// replication also carries entity/delete/ack commits; only records have a
+	// key to index under
+	if doc.Kind != "record" {
 		return ParsedDocument{}, false, nil
 	}
 
@@ -126,11 +179,12 @@ func ParseSignedDocument(sd concrnt.SignedDocument, expectedSchema string) (Pars
 	}
 
 	return ParsedDocument{
-		Document: doc,
-		CCKV:     cckv,
-		CCFS:     ccfs,
-		Owner:    parsed.Owner,
-		ID:       EncodeCCKV(cckv),
+		Document:  doc,
+		CCKV:      cckv,
+		CCFS:      ccfs,
+		Owner:     parsed.Owner,
+		ID:        EncodeCCKV(cckv),
+		Ancestors: Ancestors(cckv),
 	}, true, nil
 }
 
@@ -160,6 +214,7 @@ func NormalizeUser(sd concrnt.SignedDocument, expectedSchema string, sourceServe
 		Banner:       value.Banner,
 		Subprofiles:  value.Subprofiles,
 		Badges:       value.Badges,
+		Ancestors:    parsed.Ancestors,
 		CreatedAt:    parsed.Document.CreatedAt,
 		IndexedAt:    indexedAt,
 	}, true, nil
@@ -189,6 +244,37 @@ func NormalizeCommunity(sd concrnt.SignedDocument, expectedSchema string, source
 		Description:  value.Description,
 		Icon:         value.Icon,
 		Banner:       value.Banner,
+		Ancestors:    parsed.Ancestors,
+		CreatedAt:    parsed.Document.CreatedAt,
+		IndexedAt:    indexedAt,
+	}, true, nil
+}
+
+func NormalizePost(sd concrnt.SignedDocument, expectedSchema string, sourceServer string, indexedAt time.Time) (PostDocument, bool, error) {
+	parsed, ok, err := ParseSignedDocument(sd, expectedSchema)
+	if err != nil || !ok {
+		return PostDocument{}, ok, err
+	}
+
+	// body is optional on some schemas (a bare reroute); the value still gets
+	// indexed so the hit can be rendered
+	var value PostValue
+	if err := json.Unmarshal(parsed.Document.Value, &value); err != nil {
+		return PostDocument{}, false, fmt.Errorf("decode post value: %w", err)
+	}
+
+	return PostDocument{
+		ID:           parsed.ID,
+		Type:         "post",
+		CCKV:         parsed.CCKV,
+		CCFS:         parsed.CCFS,
+		Author:       parsed.Document.Author,
+		Owner:        parsed.Owner,
+		SourceServer: sourceServer,
+		Schema:       parsed.Document.Schema,
+		Body:         value.Body,
+		Value:        parsed.Document.Value,
+		Ancestors:    parsed.Ancestors,
 		CreatedAt:    parsed.Document.CreatedAt,
 		IndexedAt:    indexedAt,
 	}, true, nil

@@ -1,6 +1,11 @@
 package meili
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/concrnt/concrnt-crawler/internal/search/normalize"
+)
 
 func TestBuildFilter(t *testing.T) {
 	filter := BuildFilter(map[string]string{
@@ -62,5 +67,28 @@ func TestBuildFilterEscapesValues(t *testing.T) {
 	want := `owner = "con\"with\\chars"`
 	if filter != want {
 		t.Fatalf("filter mismatch:\n got: %s\nwant: %s", filter, want)
+	}
+}
+
+func TestDeleteSpecForTarget(t *testing.T) {
+	key := "cckv://con0123/concrnt.world/profiles/main/posts/p1"
+	parent := "cckv://con0123/concrnt.world/profiles/main/posts"
+	cases := []struct {
+		target string
+		want   DeleteSpec
+	}{
+		{target: key, want: DeleteSpec{IDs: []string{normalize.EncodeMeiliID(key)}}},
+		{target: parent + "/*", want: DeleteSpec{Ancestor: parent}},
+		{target: parent + "*", want: DeleteSpec{IDs: []string{normalize.EncodeMeiliID(parent)}, Ancestor: parent}},
+		{target: "ccfs://con0123/concrnt/abc", want: DeleteSpec{}},
+	}
+	for _, tc := range cases {
+		got := DeleteSpecForTarget(tc.target)
+		if strings.Join(got.IDs, ",") != strings.Join(tc.want.IDs, ",") || got.Ancestor != tc.want.Ancestor {
+			t.Fatalf("DeleteSpecForTarget(%q) = %+v, want %+v", tc.target, got, tc.want)
+		}
+		if got.IsEmpty() != tc.want.IsEmpty() {
+			t.Fatalf("DeleteSpecForTarget(%q).IsEmpty() = %v", tc.target, got.IsEmpty())
+		}
 	}
 }

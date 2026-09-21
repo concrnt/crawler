@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -23,12 +26,17 @@ import (
 const (
 	KindProfile   = "profile"
 	KindCommunity = "community"
+	KindPost      = "post"
 )
+
+const replicationEndpoint = "net.concrnt.core.replication"
 
 type Store interface {
 	UpsertServers(ctx context.Context, docs []meili.ServerDocument) error
 	UpsertUsers(ctx context.Context, docs []normalize.UserDocument) error
 	UpsertCommunities(ctx context.Context, docs []normalize.CommunityDocument) error
+	UpsertPosts(ctx context.Context, docs []normalize.PostDocument) error
+	DeleteRecords(ctx context.Context, indexUID string, spec meili.DeleteSpec) error
 }
 
 type Crawler struct {
@@ -230,6 +238,30 @@ func (c *Crawler) CrawlCCFS(ctx context.Context, ccfs string) (ManualCrawlResult
 		}, nil
 	}
 
+	for _, schema := range c.cfg.PostSchemas {
+		if doc.Schema != schema {
+			continue
+		}
+		post, ok, err := normalize.NormalizePost(sd, schema, sourceServer, time.Now().UTC())
+		if err != nil {
+			return ManualCrawlResult{}, err
+		}
+		if !ok {
+			return ManualCrawlResult{}, fmt.Errorf("post schema did not match")
+		}
+		if err := c.store.UpsertPosts(ctx, []normalize.PostDocument{post}); err != nil {
+			return ManualCrawlResult{}, err
+		}
+		return ManualCrawlResult{
+			Kind:         KindPost,
+			Schema:       schema,
+			ID:           post.ID,
+			CCKV:         post.CCKV,
+			CCFS:         post.CCFS,
+			SourceServer: sourceServer,
+		}, nil
+	}
+
 	return ManualCrawlResult{}, fmt.Errorf("unsupported schema: %s", doc.Schema)
 }
 
@@ -392,21 +424,41 @@ func (c *Crawler) crawlServer(ctx context.Context, state model.ServerState) erro
 		c.logger.Info("skipping server with unmatched layer", slog.String("server", state.Domain), slog.String("serverLayer", wkc.Layer), slog.String("targetLayer", c.cfg.Layer))
 		return nil
 	}
-	if _, ok := wkc.Endpoints["net.concrnt.core.query"]; !ok {
-		c.logger.Warn("query endpoint missing; skipping crawl", slog.String("server", wkc.Domain))
+	if _, ok := wkc.Endpoints[replicationEndpoint]; !ok {
+		c.logger.Warn("replication endpoint missing; skipping crawl", slog.String("server", wkc.Domain))
+		return nil
+	}
+
+	cursor, err := c.getOrCreateReplicationCursor(ctx, state.Domain)
+	if err != nil {
+		return err
+	}
+	if ShouldBackoff(cursor.FailCount, cursor.LastErrorAt, now) {
 		return nil
 	}
 
 	c.logger.Info("server crawl started", slog.String("server", state.Domain))
 	var joined error
-	for _, schema := range c.cfg.ProfileSchemas {
-		if err := c.crawlScope(ctx, state.Domain, KindProfile, schema); err != nil {
-			joined = errors.Join(joined, err)
+	// keep reading until the feed is drained: a run is capped at maxPagesPerRun
+	// so progress lands in the cursor in slices, but waiting a whole tick
+	// between slices would take days to get through a long log
+	for {
+		caughtUp, err := c.replicate(ctx, wkc, &cursor)
+		if err != nil {
+			var statusErr *replicationStatusError
+			if errors.As(err, &statusErr) && statusErr.Transient() {
+				// the server is asking us to slow down (CIP-16 §4); the cursor
+				// already holds every page applied so far, so just try again
+				// next tick without counting it as a failure
+				c.logger.Info("replication paused by server", slog.String("server", state.Domain), slog.Int("status", statusErr.Status))
+				break
+			}
+			c.markCursorFailure(ctx, state.Domain, err)
+			joined = fmt.Errorf("%s replication: %w", state.Domain, err)
+			break
 		}
-	}
-	for _, schema := range c.cfg.CommunitySchemas {
-		if err := c.crawlScope(ctx, state.Domain, KindCommunity, schema); err != nil {
-			joined = errors.Join(joined, err)
+		if caughtUp || ctx.Err() != nil {
+			break
 		}
 	}
 
@@ -448,258 +500,258 @@ func (c *Crawler) ensureSourceLayer(ctx context.Context, sourceServer string) er
 	return nil
 }
 
-func (c *Crawler) crawlScope(ctx context.Context, serverDomain string, kind string, schema string) error {
-	cursor, err := c.getOrCreateCursor(ctx, serverDomain, kind, schema)
-	if err != nil {
-		return err
-	}
-	now := time.Now().UTC()
-	if ShouldBackoff(cursor.FailCount, cursor.LastErrorAt, now) {
-		return nil
-	}
-
-	if cursor.LastBackfillAt == nil {
-		if err := c.runBackfill(ctx, &cursor); err != nil {
-			c.markCursorFailure(ctx, cursor.ID, err)
-			return fmt.Errorf("%s %s %s backfill: %w", serverDomain, kind, schema, err)
-		}
-		if cursor.LastBackfillAt == nil {
-			return nil
-		}
-	}
-
-	if err := c.runIncremental(ctx, &cursor); err != nil {
-		c.markCursorFailure(ctx, cursor.ID, err)
-		return fmt.Errorf("%s %s %s incremental: %w", serverDomain, kind, schema, err)
-	}
-	return nil
-}
-
-func (c *Crawler) getOrCreateCursor(ctx context.Context, serverDomain string, kind string, schema string) (model.CrawlCursor, error) {
-	var cursor model.CrawlCursor
-	err := c.db.WithContext(ctx).Where(
-		"server_domain = ? AND kind = ? AND schema = ? AND prefix = ?",
-		serverDomain,
-		kind,
-		schema,
-		c.cfg.Prefix,
-	).First(&cursor).Error
+func (c *Crawler) getOrCreateReplicationCursor(ctx context.Context, serverDomain string) (model.ReplicationCursor, error) {
+	var cursor model.ReplicationCursor
+	err := c.db.WithContext(ctx).Where("server_domain = ?", serverDomain).First(&cursor).Error
 	if err == nil {
 		return cursor, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return model.CrawlCursor{}, err
+		return model.ReplicationCursor{}, err
 	}
 
-	cursor = model.CrawlCursor{
-		ServerDomain: serverDomain,
-		Kind:         kind,
-		Schema:       schema,
-		Prefix:       c.cfg.Prefix,
-	}
+	cursor = model.ReplicationCursor{ServerDomain: serverDomain}
 	if err := c.db.WithContext(ctx).Create(&cursor).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
-			err = c.db.WithContext(ctx).Where(
-				"server_domain = ? AND kind = ? AND schema = ? AND prefix = ?",
-				serverDomain,
-				kind,
-				schema,
-				c.cfg.Prefix,
-			).First(&cursor).Error
+			err = c.db.WithContext(ctx).Where("server_domain = ?", serverDomain).First(&cursor).Error
 		}
 		if err != nil {
-			return model.CrawlCursor{}, err
+			return model.ReplicationCursor{}, err
 		}
 	}
 	return cursor, nil
 }
 
-func (c *Crawler) runBackfill(ctx context.Context, cursor *model.CrawlCursor) error {
-	started := time.Now().UTC()
-	updates := map[string]any{"last_started_at": started}
-	if cursor.BackfillUntil == nil {
-		until := started
-		cursor.BackfillUntil = &until
-		updates["backfill_until"] = until
+type replicationStatusError struct {
+	Domain string
+	Status int
+}
+
+func (e *replicationStatusError) Error() string {
+	return fmt.Sprintf("replication %s failed: status %d", e.Domain, e.Status)
+}
+
+// Transient reports a rate-limit or overload response: the run stops but the
+// server is not marked as failing.
+func (e *replicationStatusError) Transient() bool {
+	return e.Status == http.StatusTooManyRequests || e.Status == http.StatusServiceUnavailable
+}
+
+func (c *Crawler) fetchReplication(ctx context.Context, wkc concrnt.WellKnownConcrnt, params map[string]string) (concrnt.QueryResult, error) {
+	tmpl, ok := wkc.Endpoints[replicationEndpoint]
+	if !ok {
+		return concrnt.QueryResult{}, fmt.Errorf("replication endpoint missing on %s", wkc.Domain)
 	}
-	if err := c.db.WithContext(ctx).Model(cursor).Updates(updates).Error; err != nil {
-		return err
+	path, err := concrnt.RenderURITemplate(tmpl, params)
+	if err != nil {
+		return concrnt.QueryResult{}, fmt.Errorf("render replication endpoint: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+wkc.Domain+path, nil)
+	if err != nil {
+		return concrnt.QueryResult{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.client.GetClient().Do(req)
+	if err != nil {
+		return concrnt.QueryResult{}, fmt.Errorf("request replication: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return concrnt.QueryResult{}, &replicationStatusError{Domain: wkc.Domain, Status: resp.StatusCode}
+	}
+
+	var out concrnt.QueryResult
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return concrnt.QueryResult{}, fmt.Errorf("decode replication: %w", err)
+	}
+	return out, nil
+}
+
+// replicate follows the server's commit log (CIP-16) forward from the stored
+// cursor for up to maxPagesPerRun pages. It reports whether the feed was
+// drained (next == null) in this run.
+func (c *Crawler) replicate(ctx context.Context, wkc concrnt.WellKnownConcrnt, cursor *model.ReplicationCursor) (bool, error) {
+	started := time.Now().UTC()
+	if err := c.db.WithContext(ctx).Model(cursor).Updates(map[string]any{"last_started_at": started}).Error; err != nil {
+		return false, err
+	}
+
+	// receipt times are stamped mid-commit, so a row with a smaller sort key
+	// can surface after the cursor passed it: re-read a little behind the
+	// cursor on the first page of a run (CIP-16 §3.3) and rely on idempotent
+	// upserts for the rows seen twice
+	var since *time.Time
+	if cursor.CursorAt != nil {
+		s := cursor.CursorAt.Add(-c.cfg.Overlap.Duration())
+		since = &s
 	}
 
 	for page := 0; page < c.cfg.MaxPagesPerRun; page++ {
-		until := *cursor.BackfillUntil
-		result, err := c.client.Query(ctx, cursor.ServerDomain, client.QueryParams{
-			Prefix: c.cfg.Prefix,
-			Schema: cursor.Schema,
-			Until:  &until,
-			Limit:  c.cfg.PageLimit,
-			Order:  "desc",
-		})
+		params := map[string]string{
+			"limit": strconv.Itoa(c.cfg.PageLimit),
+			"order": "asc",
+		}
+		if since != nil {
+			params["since"] = since.UTC().Format(time.RFC3339Nano)
+		}
+		result, err := c.fetchReplication(ctx, wkc, params)
 		if err != nil {
-			return err
+			return false, err
 		}
-		if err := c.upsertPage(ctx, cursor.Kind, cursor.Schema, cursor.ServerDomain, result.Items); err != nil {
-			return err
+		if err := c.applyPage(ctx, wkc.Domain, result.Items); err != nil {
+			return false, err
 		}
-		// CIP-5: next is computed before read-access filtering, so items may be
+		// cursors are computed before read-access filtering, so items may be
 		// short or empty while next is still non-nil. next == nil is the only
-		// end-of-pages signal.
+		// end-of-feed signal.
 		if result.Next == nil {
-			return c.completeBackfill(ctx, cursor, started)
+			// the feed is drained. The cursor only ever takes the server's own
+			// sort key: prev is the receipt time of this page's first row, so
+			// the next run re-reads at most this page. Stamping the crawler's
+			// clock instead would skip commits whenever it runs ahead of the
+			// server's.
+			cursorAt := cursor.CursorAt
+			if result.Prev != nil && (cursorAt == nil || result.Prev.After(*cursorAt)) {
+				cursorAt = result.Prev
+			}
+			now := time.Now().UTC()
+			cursor.CursorAt = cursorAt
+			cursor.CaughtUpAt = &now
+			return true, c.db.WithContext(ctx).Model(cursor).Updates(map[string]any{
+				"cursor_at":        cursorAt,
+				"caught_up_at":     now,
+				"last_finished_at": now,
+				"fail_count":       0,
+				"last_error":       "",
+				"last_error_at":    nil,
+			}).Error
 		}
-		// since/until are inclusive and next is the sort key of the first row
-		// past the window, so echo it back unmodified. When more than one page
-		// of rows share the same createdAt the cursor cannot advance
+		// since is inclusive and next is the sort key of the first row past
+		// the window, so echo it back unmodified. When more than one page of
+		// rows share the same receipt time the cursor cannot advance
 		// (server-side limitation): step past that instant so the rest of the
-		// history is still reached, giving up only the rows at that createdAt
+		// log is still reached, giving up only the rows at that instant
 		// (1µs: server timestamps are stored with microsecond precision).
-		nextUntil := *result.Next
-		if !nextUntil.Before(until) {
-			c.logger.Warn("backfill pagination did not progress; skipping remaining rows at this createdAt", slog.String("server", cursor.ServerDomain), slog.String("schema", cursor.Schema), slog.Time("next", *result.Next))
-			nextUntil = until.Add(-time.Microsecond)
+		next := *result.Next
+		if since != nil {
+			if next.Before(*since) {
+				return false, fmt.Errorf("replication cursor went backwards: since %s next %s", since.Format(time.RFC3339Nano), next.Format(time.RFC3339Nano))
+			}
+			if next.Equal(*since) {
+				c.logger.Warn("replication pagination did not progress; skipping remaining rows at this receipt time", slog.String("server", wkc.Domain), slog.Time("next", next))
+				next = next.Add(time.Microsecond)
+			}
 		}
-		cursor.BackfillUntil = &nextUntil
+		cursor.CursorAt = &next
 		if err := c.db.WithContext(ctx).Model(cursor).Updates(map[string]any{
-			"backfill_until":   nextUntil,
+			"cursor_at":        next,
 			"last_finished_at": time.Now().UTC(),
 			"fail_count":       0,
 			"last_error":       "",
 			"last_error_at":    nil,
 		}).Error; err != nil {
-			return err
+			return false, err
 		}
+		since = &next
 	}
 
-	c.logger.Warn("backfill reached maxPagesPerRun", slog.String("server", cursor.ServerDomain), slog.String("schema", cursor.Schema), slog.Int("maxPagesPerRun", c.cfg.MaxPagesPerRun))
-	return c.markCursorSuccess(ctx, cursor)
+	c.logger.Info("replication run reached maxPagesPerRun", slog.String("server", wkc.Domain), slog.Int("maxPagesPerRun", c.cfg.MaxPagesPerRun))
+	return false, nil
 }
 
-func (c *Crawler) completeBackfill(ctx context.Context, cursor *model.CrawlCursor, started time.Time) error {
-	now := time.Now().UTC()
-	incrementalSince := started.Add(-c.cfg.Overlap.Duration())
-	cursor.LastBackfillAt = &now
-	cursor.IncrementalSince = &incrementalSince
-	cursor.BackfillUntil = nil
-	return c.db.WithContext(ctx).Model(cursor).Updates(map[string]any{
-		"last_backfill_at":  now,
-		"incremental_since": incrementalSince,
-		"backfill_until":    nil,
-		"last_finished_at":  now,
-		"fail_count":        0,
-		"last_error":        "",
-		"last_error_at":     nil,
-	}).Error
-}
-
-func (c *Crawler) runIncremental(ctx context.Context, cursor *model.CrawlCursor) error {
-	started := time.Now().UTC()
-	if err := c.db.WithContext(ctx).Model(cursor).Updates(map[string]any{"last_started_at": started}).Error; err != nil {
-		return err
-	}
-
-	since := started.Add(-c.cfg.Overlap.Duration())
-	if cursor.IncrementalSince != nil {
-		since = cursor.IncrementalSince.Add(-c.cfg.Overlap.Duration())
-	}
-	until := started
-
-	for page := 0; page < c.cfg.MaxPagesPerRun; page++ {
-		result, err := c.client.Query(ctx, cursor.ServerDomain, client.QueryParams{
-			Prefix: c.cfg.Prefix,
-			Schema: cursor.Schema,
-			Since:  &since,
-			Until:  &until,
-			Limit:  c.cfg.PageLimit,
-			Order:  "asc",
-		})
-		if err != nil {
-			return err
-		}
-		if err := c.upsertPage(ctx, cursor.Kind, cursor.Schema, cursor.ServerDomain, result.Items); err != nil {
-			return err
-		}
-		if result.Next == nil {
-			return c.completeIncremental(ctx, cursor, started)
-		}
-		nextSince := *result.Next
-		if !nextSince.After(since) {
-			c.logger.Warn("incremental pagination did not progress; skipping remaining rows at this createdAt", slog.String("server", cursor.ServerDomain), slog.String("schema", cursor.Schema), slog.Time("next", *result.Next))
-			nextSince = since.Add(time.Microsecond)
-		}
-		since = nextSince
-	}
-
-	c.logger.Warn("incremental reached maxPagesPerRun", slog.String("server", cursor.ServerDomain), slog.String("schema", cursor.Schema), slog.Int("maxPagesPerRun", c.cfg.MaxPagesPerRun))
-	return c.markCursorSuccess(ctx, cursor)
-}
-
-func (c *Crawler) completeIncremental(ctx context.Context, cursor *model.CrawlCursor, crawlStartedAt time.Time) error {
-	now := time.Now().UTC()
-	cursor.IncrementalSince = &crawlStartedAt
-	cursor.LastIncrementalAt = &now
-	return c.db.WithContext(ctx).Model(cursor).Updates(map[string]any{
-		"incremental_since":   crawlStartedAt,
-		"last_incremental_at": now,
-		"last_finished_at":    now,
-		"fail_count":          0,
-		"last_error":          "",
-		"last_error_at":       nil,
-	}).Error
-}
-
-func (c *Crawler) markCursorSuccess(ctx context.Context, cursor *model.CrawlCursor) error {
-	now := time.Now().UTC()
-	return c.db.WithContext(ctx).Model(cursor).Updates(map[string]any{
-		"last_finished_at": now,
-		"fail_count":       0,
-		"last_error":       "",
-		"last_error_at":    nil,
-	}).Error
-}
-
-func (c *Crawler) upsertPage(ctx context.Context, kind string, schema string, sourceServer string, docs []concrnt.SignedDocument) error {
+// applyPage applies one page of commits in log order. Upserts are batched per
+// index and flushed before any delete so a record deleted later in the same
+// page does not survive, and a key committed twice keeps its last document.
+func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []concrnt.SignedDocument) error {
 	indexedAt := time.Now().UTC()
-	switch kind {
-	case KindProfile:
-		out := make([]normalize.UserDocument, 0, len(docs))
-		seen := map[string]bool{}
-		for _, sd := range docs {
-			doc, ok, err := normalize.NormalizeUser(sd, schema, sourceServer, indexedAt)
-			if err != nil {
-				c.logger.Warn("skipping malformed profile", slog.String("server", sourceServer), slog.String("schema", schema), slog.String("error", err.Error()))
-				continue
+	users := map[string]normalize.UserDocument{}
+	communities := map[string]normalize.CommunityDocument{}
+	posts := map[string]normalize.PostDocument{}
+	flush := func() error {
+		if len(users) > 0 {
+			if err := c.store.UpsertUsers(ctx, slices.Collect(maps.Values(users))); err != nil {
+				return err
 			}
-			if !ok || seen[doc.ID] {
-				continue
-			}
-			seen[doc.ID] = true
-			out = append(out, doc)
+			clear(users)
 		}
-		return c.store.UpsertUsers(ctx, out)
-	case KindCommunity:
-		out := make([]normalize.CommunityDocument, 0, len(docs))
-		seen := map[string]bool{}
-		for _, sd := range docs {
-			doc, ok, err := normalize.NormalizeCommunity(sd, schema, sourceServer, indexedAt)
-			if err != nil {
-				c.logger.Warn("skipping malformed community", slog.String("server", sourceServer), slog.String("schema", schema), slog.String("error", err.Error()))
-				continue
+		if len(communities) > 0 {
+			if err := c.store.UpsertCommunities(ctx, slices.Collect(maps.Values(communities))); err != nil {
+				return err
 			}
-			if !ok || seen[doc.ID] {
-				continue
-			}
-			seen[doc.ID] = true
-			out = append(out, doc)
+			clear(communities)
 		}
-		return c.store.UpsertCommunities(ctx, out)
-	default:
-		return fmt.Errorf("unknown crawl kind: %s", kind)
+		if len(posts) > 0 {
+			if err := c.store.UpsertPosts(ctx, slices.Collect(maps.Values(posts))); err != nil {
+				return err
+			}
+			clear(posts)
+		}
+		return nil
 	}
+
+	for _, sd := range items {
+		var doc concrnt.Document[json.RawMessage]
+		if err := json.Unmarshal([]byte(sd.Document), &doc); err != nil {
+			c.logger.Warn("skipping malformed commit", slog.String("server", sourceServer), slog.String("error", err.Error()))
+			continue
+		}
+		switch doc.Kind {
+		case "record":
+			switch {
+			case slices.Contains(c.cfg.ProfileSchemas, doc.Schema):
+				user, ok, err := normalize.NormalizeUser(sd, doc.Schema, sourceServer, indexedAt)
+				if err != nil {
+					c.logger.Warn("skipping malformed profile", slog.String("server", sourceServer), slog.String("schema", doc.Schema), slog.String("error", err.Error()))
+					continue
+				}
+				if ok {
+					users[user.ID] = user
+				}
+			case slices.Contains(c.cfg.CommunitySchemas, doc.Schema):
+				community, ok, err := normalize.NormalizeCommunity(sd, doc.Schema, sourceServer, indexedAt)
+				if err != nil {
+					c.logger.Warn("skipping malformed community", slog.String("server", sourceServer), slog.String("schema", doc.Schema), slog.String("error", err.Error()))
+					continue
+				}
+				if ok {
+					communities[community.ID] = community
+				}
+			case slices.Contains(c.cfg.PostSchemas, doc.Schema):
+				post, ok, err := normalize.NormalizePost(sd, doc.Schema, sourceServer, indexedAt)
+				if err != nil {
+					c.logger.Warn("skipping malformed post", slog.String("server", sourceServer), slog.String("schema", doc.Schema), slog.String("error", err.Error()))
+					continue
+				}
+				if ok {
+					posts[post.ID] = post
+				}
+			}
+		case "delete":
+			var target string
+			if err := json.Unmarshal(doc.Value, &target); err != nil || target == "" {
+				c.logger.Warn("skipping malformed delete", slog.String("server", sourceServer))
+				continue
+			}
+			spec := meili.DeleteSpecForTarget(target)
+			if spec.IsEmpty() {
+				continue
+			}
+			if err := flush(); err != nil {
+				return err
+			}
+			for _, indexUID := range meili.RecordIndexes {
+				if err := c.store.DeleteRecords(ctx, indexUID, spec); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return flush()
 }
 
-func (c *Crawler) markCursorFailure(ctx context.Context, cursorID uint, err error) {
+func (c *Crawler) markCursorFailure(ctx context.Context, serverDomain string, err error) {
 	now := time.Now().UTC()
-	if updateErr := c.db.WithContext(ctx).Model(&model.CrawlCursor{}).Where("id = ?", cursorID).Updates(map[string]any{
+	if updateErr := c.db.WithContext(ctx).Model(&model.ReplicationCursor{}).Where("server_domain = ?", serverDomain).Updates(map[string]any{
 		"last_error_at": now,
 		"last_error":    truncateError(err),
 		"fail_count":    gorm.Expr("fail_count + 1"),

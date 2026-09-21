@@ -3,6 +3,7 @@ package crawler
 import (
 	"encoding/json"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,14 +41,14 @@ func TestMatchesLayer(t *testing.T) {
 	}
 }
 
-func TestQueryURITemplateExpansion(t *testing.T) {
+func TestReplicationURITemplateExpansion(t *testing.T) {
+	since := "2026-09-15T12:00:00.123456Z"
 	path, err := concrnt.RenderURITemplate(
-		"/query{?prefix,schema,since,until,limit,order,parent}",
+		"/api/v2/replication{?owner,since,until,limit,order}",
 		map[string]string{
-			"prefix": "cckv://",
-			"schema": "https://schema.concrnt.world/p/main.json",
-			"limit":  "100",
-			"order":  "asc",
+			"since": since,
+			"limit": "100",
+			"order": "asc",
 		},
 	)
 	if err != nil {
@@ -57,11 +58,11 @@ func TestQueryURITemplateExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Path != "/query" {
+	if parsed.Path != "/api/v2/replication" {
 		t.Fatalf("path mismatch: %s", parsed.Path)
 	}
 	query := parsed.Query()
-	if query.Get("prefix") != "cckv://" || query.Get("schema") != "https://schema.concrnt.world/p/main.json" || query.Get("limit") != "100" || query.Get("order") != "asc" {
+	if query.Get("since") != since || query.Get("limit") != "100" || query.Get("order") != "asc" || query.Has("owner") || query.Has("until") {
 		t.Fatalf("query mismatch: %s", parsed.RawQuery)
 	}
 }
@@ -69,6 +70,7 @@ func TestQueryURITemplateExpansion(t *testing.T) {
 func testSignedDocument(t *testing.T, createdAt time.Time) concrnt.SignedDocument {
 	t.Helper()
 	doc := concrnt.Document[map[string]string]{
+		Kind:      "record",
 		Key:       "cckv://con012345678901234567890123456789012345678/profile/main",
 		Value:     map[string]string{"username": "alice"},
 		Author:    "con012345678901234567890123456789012345678",
@@ -81,6 +83,28 @@ func testSignedDocument(t *testing.T, createdAt time.Time) concrnt.SignedDocumen
 	}
 	return concrnt.SignedDocument{
 		Document: string(body),
+		Proof:    concrnt.Proof{Type: concrnt.ProofTypeNone},
+	}
+}
+
+func testPostDocument(t *testing.T, key string, body string, createdAt time.Time) concrnt.SignedDocument {
+	t.Helper()
+	doc := concrnt.Document[map[string]string]{
+		Kind:      "record",
+		Key:       key,
+		Value:     map[string]string{"body": body},
+		Author:    "con012345678901234567890123456789012345678",
+		Schema:    "https://schema.concrnt.world/m/markdown.json",
+		CreatedAt: createdAt,
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ccfs := "ccfs://con012345678901234567890123456789012345678/concrnt/" + strings.ReplaceAll(key[strings.LastIndex(key, "/")+1:], "-", "")
+	return concrnt.SignedDocument{
+		CCFS:     &ccfs,
+		Document: string(raw),
 		Proof:    concrnt.Proof{Type: concrnt.ProofTypeNone},
 	}
 }

@@ -136,6 +136,7 @@ func TestSameCCKVUpdateKeepsSameID(t *testing.T) {
 func signedDocument(t *testing.T, key string, schema string, value any, createdAt time.Time) concrnt.SignedDocument {
 	t.Helper()
 	doc := concrnt.Document[any]{
+		Kind:      "record",
 		Key:       key,
 		Value:     value,
 		Author:    "con012345678901234567890123456789012345678",
@@ -152,4 +153,80 @@ func signedDocument(t *testing.T, key string, schema string, value any, createdA
 		Document: string(body),
 		Proof:    concrnt.Proof{Type: concrnt.ProofTypeNone},
 	}
+}
+
+func TestAncestors(t *testing.T) {
+	cases := []struct {
+		cckv string
+		want []string
+	}{
+		{cckv: "cckv://con0123/a/b/c", want: []string{"cckv://con0123", "cckv://con0123/a", "cckv://con0123/a/b"}},
+		{cckv: "cckv://con0123/a", want: []string{"cckv://con0123"}},
+		{cckv: "cckv://con0123", want: []string{}},
+		{cckv: "cckv://con0123@hint.example/x/y", want: []string{"cckv://con0123", "cckv://con0123/x"}},
+		{cckv: "ccfs://con0123/concrnt/abc", want: []string{}},
+	}
+	for _, tc := range cases {
+		got := Ancestors(tc.cckv)
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Fatalf("Ancestors(%q) = %v, want %v", tc.cckv, got, tc.want)
+		}
+	}
+}
+
+func TestNormalizePost(t *testing.T) {
+	const postSchema = "https://schema.concrnt.world/m/markdown.json"
+	createdAt := time.Date(2026, 9, 15, 1, 2, 3, 0, time.UTC)
+	indexedAt := createdAt.Add(time.Minute)
+	cckv := "cckv://con012345678901234567890123456789012345678/concrnt.world/profiles/main/posts/p1"
+	sd := signedDocument(t, cckv, postSchema, map[string]any{
+		"body":   "hello **world**",
+		"emojis": map[string]any{"wave": map[string]string{"imageURL": "https://example.com/wave.png"}},
+	}, createdAt)
+
+	post, ok, err := NormalizePost(sd, postSchema, "example.net", indexedAt)
+	if err != nil || !ok {
+		t.Fatalf("NormalizePost failed: ok=%v err=%v", ok, err)
+	}
+	if post.Type != "post" || post.Body != "hello **world**" || post.Author != "con012345678901234567890123456789012345678" || post.Owner != "con012345678901234567890123456789012345678" {
+		t.Fatalf("unexpected post: %+v", post)
+	}
+	if post.ID != EncodeCCKV(cckv) || post.CCKV != cckv || post.SourceServer != "example.net" || !post.CreatedAt.Equal(createdAt) {
+		t.Fatalf("unexpected post identity: %+v", post)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(post.Value, &value); err != nil || value["emojis"] == nil {
+		t.Fatalf("value must keep the whole record value: %s", post.Value)
+	}
+	if strings.Join(post.Ancestors, ",") != "cckv://con012345678901234567890123456789012345678,cckv://con012345678901234567890123456789012345678/concrnt.world,cckv://con012345678901234567890123456789012345678/concrnt.world/profiles,cckv://con012345678901234567890123456789012345678/concrnt.world/profiles/main,cckv://con012345678901234567890123456789012345678/concrnt.world/profiles/main/posts" {
+		t.Fatalf("unexpected ancestors: %v", post.Ancestors)
+	}
+
+	// a bare reroute has no body but is still indexed for rendering
+	reroute, ok, err := NormalizePost(signedDocument(t, cckv, postSchema, map[string]any{"targetURI": "cckv://x/y"}, createdAt), postSchema, "example.net", indexedAt)
+	if err != nil || !ok || reroute.Body != "" {
+		t.Fatalf("bodyless post should normalize: ok=%v err=%v body=%q", ok, err, reroute.Body)
+	}
+
+	// replication also carries non-record kinds under any schema
+	if _, ok, err := NormalizePost(signedDocumentOfKind(t, "delete", cckv, postSchema, createdAt), postSchema, "example.net", indexedAt); err != nil || ok {
+		t.Fatalf("non-record kind must not match: ok=%v err=%v", ok, err)
+	}
+}
+
+func signedDocumentOfKind(t *testing.T, kind string, key string, schema string, createdAt time.Time) concrnt.SignedDocument {
+	t.Helper()
+	doc := concrnt.Document[any]{
+		Kind:      kind,
+		Key:       key,
+		Value:     key,
+		Author:    "con012345678901234567890123456789012345678",
+		Schema:    schema,
+		CreatedAt: createdAt,
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return concrnt.SignedDocument{Document: string(raw), Proof: concrnt.Proof{Type: concrnt.ProofTypeNone}}
 }

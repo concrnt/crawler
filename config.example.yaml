@@ -5,19 +5,27 @@ server:
 crawl:
   seed: "ariake.concrnt.net"
   layer: "concrnt-mainnet"
-  prefix: "cckv://"
   knownServersInterval: "10m"
   incrementalInterval: "15m"
   requestTimeout: "10s"
   globalConcurrency: 8
   perServerConcurrency: 1
   pageLimit: 100
-  overlap: "2m"
+  overlap: "10s"
   maxPagesPerRun: 1000
   profileSchemas:
     - "https://schema.concrnt.world/p/main.json"
   communitySchemas:
     - "https://schema.concrnt.world/t/community.json"
+  postSchemas:
+    - "https://schema.concrnt.world/m/markdown.json"
+    - "https://schema.concrnt.world/m/reply.json"
+    - "https://schema.concrnt.world/m/reroute.json"
+    - "https://schema.concrnt.world/m/plaintext.json"
+    - "https://schema.concrnt.world/m/media.json"
+    - "https://schema.concrnt.world/m/gfm.json"
+    - "https://schema.concrnt.world/m/mfm.json"
+    - "https://schema.concrnt.world/m/cfm.json"
 
 backends:
   postgresDsn: "postgres://concrnt_crawler:password@db:5432/concrnt_crawler?sslmode=disable"

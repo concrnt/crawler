@@ -44,6 +44,7 @@ func (h *Handler) RegisterRoutes(e *echo.Echo) {
 	e.GET("/api/v1/search/users", h.searchUsers)
 	e.GET("/api/v1/search/communities", h.searchCommunities)
 	e.GET("/api/v1/search/servers", h.searchServers)
+	e.GET("/api/v1/search/posts", h.searchPosts)
 	e.GET("/api/v1/stats", h.stats)
 	e.POST("/api/v1/crawl/ccfs", h.crawlCCFS)
 }
@@ -95,6 +96,22 @@ func (h *Handler) searchServers(c echo.Context) error {
 	}, "")
 }
 
+func (h *Handler) searchPosts(c echo.Context) error {
+	filter := meili.BuildFilter(map[string]string{
+		"author":       c.QueryParam("author"),
+		"sourceServer": c.QueryParam("sourceServer"),
+		"schema":       c.QueryParam("schema"),
+	}, map[string]bool{
+		"author":       true,
+		"sourceServer": true,
+		"schema":       true,
+	})
+	return h.search(c, meili.PostsIndex, filter, map[string]bool{
+		"createdAt": true,
+		"indexedAt": true,
+	}, "createdAt:desc")
+}
+
 func (h *Handler) search(c echo.Context, indexUID string, filter string, sortable map[string]bool, defaultSort string) error {
 	limit := parseInt(c.QueryParam("limit"), 20)
 	if limit < 1 {
@@ -136,14 +153,18 @@ func (h *Handler) stats(c echo.Context) error {
 	var serverCount int64
 	var cursorCount int64
 	var failureCount int64
+	var catchingUpCount int64
 	var lastCrawled sql.NullTime
 	if err := h.db.WithContext(ctx).Model(&model.ServerState{}).Count(&serverCount).Error; err != nil {
 		return err
 	}
-	if err := h.db.WithContext(ctx).Model(&model.CrawlCursor{}).Count(&cursorCount).Error; err != nil {
+	if err := h.db.WithContext(ctx).Model(&model.ReplicationCursor{}).Count(&cursorCount).Error; err != nil {
 		return err
 	}
-	if err := h.db.WithContext(ctx).Model(&model.CrawlCursor{}).Where("fail_count > 0").Count(&failureCount).Error; err != nil {
+	if err := h.db.WithContext(ctx).Model(&model.ReplicationCursor{}).Where("fail_count > 0").Count(&failureCount).Error; err != nil {
+		return err
+	}
+	if err := h.db.WithContext(ctx).Model(&model.ReplicationCursor{}).Where("caught_up_at IS NULL").Count(&catchingUpCount).Error; err != nil {
 		return err
 	}
 	if err := h.db.WithContext(ctx).Model(&model.ServerState{}).Select("MAX(last_crawled_at)").Scan(&lastCrawled).Error; err != nil {
@@ -165,8 +186,9 @@ func (h *Handler) stats(c echo.Context) error {
 			"lastCrawlAt": lastCrawl,
 		},
 		"cursors": map[string]any{
-			"count":        cursorCount,
-			"failureCount": failureCount,
+			"count":           cursorCount,
+			"failureCount":    failureCount,
+			"catchingUpCount": catchingUpCount,
 		},
 		"meilisearch": meiliStats,
 	})

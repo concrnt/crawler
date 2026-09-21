@@ -38,7 +38,8 @@ func Run(ctx context.Context, cfg searchconfig.Config, version string) error {
 	}
 
 	meiliClient := meili.NewClient(cfg.Backends.MeiliHost, cfg.Backends.MeiliAPIKey)
-	searchStore := meili.New(meiliClient, 2*time.Minute, slog.Default())
+	// a settings update re-indexes the whole index in one task
+	searchStore := meili.New(meiliClient, 10*time.Minute, slog.Default())
 	if err := searchStore.EnsureIndexes(ctx); err != nil {
 		return fmt.Errorf("setup meilisearch indexes: %w", err)
 	}
