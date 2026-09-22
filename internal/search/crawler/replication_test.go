@@ -128,6 +128,7 @@ func TestCrawlServerAppliesCommitsInLogOrder(t *testing.T) {
 				commit(t, "record", post1, config.DefaultPostSchemas[0], map[string]string{"body": "first"}, "ccfs://a/concrnt/1"),
 				commit(t, "record", "cckv://"+testAuthor+"/concrnt.world/profiles/main", config.DefaultProfileSchema, map[string]string{"username": "alice"}, "ccfs://a/concrnt/2"),
 				commit(t, "record", "cckv://example.com/t/general", config.DefaultCommunitySchema, map[string]string{"name": "general"}, "ccfs://a/concrnt/3"),
+				commit(t, "record", "cckv://"+testAuthor+"/t/mine", config.DefaultCommunitySchema, map[string]string{"name": "user-owned"}, "ccfs://a/concrnt/3u"),
 				commit(t, "entity", "cckv://"+testAuthor, "https://schema.concrnt.net/entity.json", map[string]string{"domain": replicationDomain}, "ccfs://a/concrnt/4"),
 				commit(t, "association", "", "https://schema.concrnt.world/a/like.json", map[string]string{}, "ccfs://a/concrnt/5"),
 				{Document: "{not json", Proof: concrnt.Proof{Type: concrnt.ProofTypeNone}},
@@ -161,7 +162,7 @@ func TestCrawlServerAppliesCommitsInLogOrder(t *testing.T) {
 		t.Fatalf("expected the last document per key, got %+v", store.posts)
 	}
 	if len(store.users) != 1 || store.users[0].Username != "alice" || len(store.communities) != 1 || store.communities[0].Name != "general" {
-		t.Fatalf("profile/community not indexed: users=%+v communities=%+v", store.users, store.communities)
+		t.Fatalf("profile/community not indexed (user-owned community must be skipped): users=%+v communities=%+v", store.users, store.communities)
 	}
 	if len(store.deletes) != 3 || len(store.deletes[0].IDs) != 1 || store.deletes[0].Ancestor != "" {
 		t.Fatalf("unexpected delete specs: %+v", store.deletes)

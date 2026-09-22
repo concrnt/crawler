@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -34,6 +35,20 @@ type CommunityValue struct {
 
 type PostValue struct {
 	Body string `json:"body"`
+}
+
+// hostnameRe is RFC 1123 hostname syntax: dot-separated labels of letters,
+// digits and inner hyphens. CCID/CSID are valid labels too, so they are
+// excluded separately in IsDomainOwner.
+var hostnameRe = regexp.MustCompile(`^(?i:[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.(?i:[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?))*$`)
+
+// IsDomainOwner reports whether a cckv owner is a server FQDN (CIP-0 owner
+// forms: CCID, CSID, FQDN, or the alias @FQDN; only the plain FQDN counts).
+func IsDomainOwner(owner string) bool {
+	if concrnt.IsCCID(owner) || concrnt.IsCSID(owner) {
+		return false
+	}
+	return len(owner) <= 253 && hostnameRe.MatchString(owner)
 }
 
 type UserDocument struct {
@@ -224,6 +239,12 @@ func NormalizeCommunity(sd concrnt.SignedDocument, expectedSchema string, source
 	parsed, ok, err := ParseSignedDocument(sd, expectedSchema)
 	if err != nil || !ok {
 		return CommunityDocument{}, ok, err
+	}
+
+	// communities must be domain-owned; user-owned ones are out of search scope
+	// for now
+	if !IsDomainOwner(parsed.Owner) {
+		return CommunityDocument{}, false, fmt.Errorf("community owner %q is not a domain: only domain-owned communities are indexed", parsed.Owner)
 	}
 
 	var value CommunityValue

@@ -5,6 +5,7 @@ Concrnt public records crawler + Meilisearch search API.
 Seed Concrnt server から known servers を取得し、各 server の `net.concrnt.core.replication` (CIP-16) を匿名で追従して users / communities / posts を収集し、Meilisearch に投入します。
 
 - 索引されるのは匿名で読める record だけです (非公開 record は replication 応答から除外されます)。
+- community はドメイン所有 (`cckv://<FQDN>/...`) のものだけを索引します。owner が CCID のユーザー所有 community は当面検索対象外で、replication では警告ログを出してスキップ、manual crawl ではエラーになります。
 - `kind: delete` も反映します。`key/*` (配下) と `key*` (自身+配下) の範囲削除にも対応します。
 - replication endpoint を持たない server はスキップされます。
 
@@ -105,7 +106,7 @@ GET /api/v1/search/users?q=alice&limit=20&offset=0&sourceServer=example.net&owne
 ### Search Communities
 
 ```http
-GET /api/v1/search/communities?q=general&limit=20&offset=0&sourceServer=example.net&owner=con...
+GET /api/v1/search/communities?q=general&limit=20&offset=0&sourceServer=example.net&owner=example.net
 ```
 
 ### Search Posts

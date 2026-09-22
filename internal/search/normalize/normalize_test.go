@@ -80,7 +80,7 @@ func TestNormalizeUser(t *testing.T) {
 
 func TestNormalizeCommunity(t *testing.T) {
 	createdAt := time.Date(2026, 5, 15, 1, 2, 3, 0, time.UTC)
-	cckv := "cckv://con012345678901234567890123456789012345678/community/general"
+	cckv := "cckv://example.net/community/general"
 	sd := signedDocument(t, cckv, communitySchema, CommunityValue{
 		Name:        "General",
 		Shortname:   "general",
@@ -96,8 +96,43 @@ func TestNormalizeCommunity(t *testing.T) {
 	if !ok {
 		t.Fatal("expected document to match schema")
 	}
-	if doc.Name != "General" || doc.Shortname != "general" || doc.Owner == "" {
+	if doc.Name != "General" || doc.Shortname != "general" || doc.Owner != "example.net" {
 		t.Fatalf("unexpected normalized community: %+v", doc)
+	}
+}
+
+func TestNormalizeCommunityRejectsNonDomainOwner(t *testing.T) {
+	for _, owner := range []string{
+		"con012345678901234567890123456789012345678",
+		"ccs012345678901234567890123456789012345678",
+		"@example.net",
+		"example.net:8000",
+		"-bad.example.net",
+	} {
+		sd := signedDocument(t, "cckv://"+owner+"/community/general", communitySchema, CommunityValue{Name: "General"}, time.Now())
+		_, ok, err := NormalizeCommunity(sd, communitySchema, "example.net", time.Now())
+		if err == nil || ok {
+			t.Fatalf("owner %q should be rejected: ok=%v err=%v", owner, ok, err)
+		}
+	}
+}
+
+func TestIsDomainOwner(t *testing.T) {
+	for owner, want := range map[string]bool{
+		"example.net":       true,
+		"v2dev.concrnt.net": true,
+		"localhost":         true,
+		"Example.NET":       true,
+		"con012345678901234567890123456789012345678": false,
+		"ccs012345678901234567890123456789012345678": false,
+		"@example.net":     false,
+		"example.net:8000": false,
+		"":                 false,
+		"example..net":     false,
+	} {
+		if got := IsDomainOwner(owner); got != want {
+			t.Fatalf("IsDomainOwner(%q) = %v, want %v", owner, got, want)
+		}
 	}
 }
 
