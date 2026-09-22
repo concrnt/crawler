@@ -31,5 +31,7 @@ func Migrate(db *gorm.DB) error {
 	return db.AutoMigrate(
 		&model.ServerState{},
 		&model.ReplicationCursor{},
+		&model.IndexedCommunity{},
+		&model.CommunityEntry{},
 	)
 }

@@ -116,6 +116,7 @@ type manualStore struct {
 	communities []normalize.CommunityDocument
 	posts       []normalize.PostDocument
 	deletes     []meili.DeleteSpec
+	activity    []meili.CommunityActivityDocument
 	calls       []string
 }
 
@@ -144,6 +145,12 @@ func (s *manualStore) UpsertPosts(_ context.Context, docs []normalize.PostDocume
 func (s *manualStore) DeleteRecords(_ context.Context, indexUID string, spec meili.DeleteSpec) error {
 	s.deletes = append(s.deletes, spec)
 	s.calls = append(s.calls, "delete:"+indexUID)
+	return nil
+}
+
+func (s *manualStore) UpdateCommunityActivity(_ context.Context, docs []meili.CommunityActivityDocument) error {
+	s.activity = append(s.activity, docs...)
+	s.calls = append(s.calls, "activity")
 	return nil
 }
 

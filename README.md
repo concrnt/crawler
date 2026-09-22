@@ -84,6 +84,24 @@ observability:
 - `incrementalInterval`: replication feed をポーリングする間隔。追いついていない server は tick を待たずに読み続けます。
 - `overlap`: 前回の cursor からどれだけ戻って読み直すか。replication のソートキーは server の受理時刻で、コミット中に採番されるため数秒で十分です。
 - `maxPagesPerRun`: 1 run で読むページ数の上限。cursor はページごとに保存されます。
+- `activityInterval`: コミュニティの活動量を再集計して索引へ書き込む間隔 (既定 10m)。
+- `activityHalfLife`: `activityScore` の半減期 (既定 168h = 7 日)。
+
+## Community activity
+
+コミュニティ検索を「アクティブ順」に並べるため、投稿の着信量をクロール時に事前集計しています。
+
+- コミュニティ key の直下に着信した record (通常は CIP-7 配送が残す reference record `<community>/<cdid>`) を、
+  schema を問わず 1 件の活動として Postgres (`community_entries`) に積みます。reply / reroute も含みます。
+  親 key が索引済みコミュニティでない record は捨てます。
+- `activityInterval` ごとに索引済みコミュニティ全件について次を計算し、`concrnt_communities` の文書へ部分更新で書き込みます。
+  - `activityScore`: 直近 30 日の着信について `2^(-経過時間/activityHalfLife)` を合計した値
+  - `postCount7d` / `postCount30d`: 直近 7 日 / 30 日の着信数
+  - `activeAuthors7d`: 直近 7 日のユニーク投稿者数
+  - `lastPostAt`: 最新の着信時刻 (30 日より前でも出ます。着信が無ければ省略)
+- `kind: delete` (単一 key / `key/*` / `key*`) は entries にも反映されます。元投稿の削除に伴う reference の掃除はサーバー内部で行われ
+  replication には reference key の delete として現れないため (CIP-4 §6.1)、reference の `value.href` も削除対象の照合に使います。
+- 既に稼働している環境へ入れる場合、過去分は `replication_cursors` を削除して再クロールしてください (互換処理はありません)。
 
 ## API
 
@@ -106,8 +124,10 @@ GET /api/v1/search/users?q=alice&limit=20&offset=0&sourceServer=example.net&owne
 ### Search Communities
 
 ```http
-GET /api/v1/search/communities?q=general&limit=20&offset=0&sourceServer=example.net&owner=example.net
+GET /api/v1/search/communities?q=general&limit=20&offset=0&sourceServer=example.net&owner=example.net&sort=activityScore
 ```
+
+`sort` は `createdAt` / `indexedAt` / `name` に加えて `activityScore` / `postCount7d` / `postCount30d` / `activeAuthors7d` / `lastPostAt` を受け付けます (方向省略時は `desc`、未指定時は `createdAt:desc`)。`sort=activityScore` がアクティブ順です。
 
 ### Search Posts
 

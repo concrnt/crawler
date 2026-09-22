@@ -82,6 +82,8 @@ type Crawl struct {
 	PageLimit            int      `yaml:"pageLimit"`
 	Overlap              Duration `yaml:"overlap"`
 	MaxPagesPerRun       int      `yaml:"maxPagesPerRun"`
+	ActivityInterval     Duration `yaml:"activityInterval"`
+	ActivityHalfLife     Duration `yaml:"activityHalfLife"`
 	ProfileSchemas       []string `yaml:"profileSchemas"`
 	CommunitySchemas     []string `yaml:"communitySchemas"`
 	PostSchemas          []string `yaml:"postSchemas"`
@@ -112,6 +114,8 @@ func Default() Config {
 			PageLimit:            100,
 			Overlap:              Duration(10 * time.Second),
 			MaxPagesPerRun:       1000,
+			ActivityInterval:     Duration(10 * time.Minute),
+			ActivityHalfLife:     Duration(7 * 24 * time.Hour),
 			ProfileSchemas:       []string{DefaultProfileSchema},
 			CommunitySchemas:     []string{DefaultCommunitySchema},
 			PostSchemas:          append([]string(nil), DefaultPostSchemas...),
@@ -187,6 +191,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Crawl.MaxPagesPerRun <= 0 {
 		c.Crawl.MaxPagesPerRun = 1000
+	}
+	if c.Crawl.ActivityInterval.Duration() <= 0 {
+		c.Crawl.ActivityInterval = Duration(10 * time.Minute)
+	}
+	if c.Crawl.ActivityHalfLife.Duration() <= 0 {
+		c.Crawl.ActivityHalfLife = Duration(7 * 24 * time.Hour)
 	}
 	if len(c.Crawl.ProfileSchemas) == 0 {
 		c.Crawl.ProfileSchemas = []string{DefaultProfileSchema}

@@ -31,12 +31,17 @@ const (
 
 const replicationEndpoint = "net.concrnt.core.replication"
 
+// referenceSchema is the schema of the reference records a distribution
+// (CIP-7 §4.1) leaves under its destination.
+const referenceSchema = "https://schema.concrnt.net/reference.json"
+
 type Store interface {
 	UpsertServers(ctx context.Context, docs []meili.ServerDocument) error
 	UpsertUsers(ctx context.Context, docs []normalize.UserDocument) error
 	UpsertCommunities(ctx context.Context, docs []normalize.CommunityDocument) error
 	UpsertPosts(ctx context.Context, docs []normalize.PostDocument) error
 	DeleteRecords(ctx context.Context, indexUID string, spec meili.DeleteSpec) error
+	UpdateCommunityActivity(ctx context.Context, docs []meili.CommunityActivityDocument) error
 }
 
 type Crawler struct {
@@ -75,6 +80,7 @@ func (c *Crawler) Start(ctx context.Context) {
 		// crawl finds no servers and nothing happens until the next tick
 		c.runDiscovery(ctx)
 		go c.discoveryLoop(ctx)
+		go c.activityLoop(ctx)
 		c.crawlLoop(ctx)
 	}()
 }
@@ -226,6 +232,9 @@ func (c *Crawler) CrawlCCFS(ctx context.Context, ccfs string) (ManualCrawlResult
 			return ManualCrawlResult{}, fmt.Errorf("community schema did not match")
 		}
 		if err := c.store.UpsertCommunities(ctx, []normalize.CommunityDocument{community}); err != nil {
+			return ManualCrawlResult{}, err
+		}
+		if err := c.mirrorCommunities(ctx, []string{community.CCKV}, time.Now().UTC()); err != nil {
 			return ManualCrawlResult{}, err
 		}
 		return ManualCrawlResult{
@@ -667,6 +676,7 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 	users := map[string]normalize.UserDocument{}
 	communities := map[string]normalize.CommunityDocument{}
 	posts := map[string]normalize.PostDocument{}
+	entries := map[string]model.CommunityEntry{}
 	flush := func() error {
 		if len(users) > 0 {
 			if err := c.store.UpsertUsers(ctx, slices.Collect(maps.Values(users))); err != nil {
@@ -678,6 +688,13 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 			if err := c.store.UpsertCommunities(ctx, slices.Collect(maps.Values(communities))); err != nil {
 				return err
 			}
+			keys := make([]string, 0, len(communities))
+			for _, community := range communities {
+				keys = append(keys, community.CCKV)
+			}
+			if err := c.mirrorCommunities(ctx, keys, indexedAt); err != nil {
+				return err
+			}
 			clear(communities)
 		}
 		if len(posts) > 0 {
@@ -685,6 +702,14 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 				return err
 			}
 			clear(posts)
+		}
+		if len(entries) > 0 {
+			// the mirror was updated above, so a community created earlier in
+			// this page already counts its references
+			if err := c.recordCommunityEntries(ctx, slices.Collect(maps.Values(entries))); err != nil {
+				return err
+			}
+			clear(entries)
 		}
 		return nil
 	}
@@ -697,6 +722,24 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 		}
 		switch doc.Kind {
 		case "record":
+			// any record landing directly under a community key is activity
+			// there, whatever its schema: a distribution (CIP-7) arrives as a
+			// reference record keyed <community>/<cdid>. Whether the parent is
+			// an indexed community is settled against the mirror at flush, so
+			// within one page a community counts entries that preceded its
+			// own creation commit.
+			if parent, ok := communityParent(doc.Key); ok {
+				entry := model.CommunityEntry{CommunityCCKV: parent, EntryCCKV: doc.Key, Author: doc.Author, CreatedAt: doc.CreatedAt}
+				if doc.Schema == referenceSchema {
+					var ref struct {
+						Href string `json:"href"`
+					}
+					if err := json.Unmarshal(doc.Value, &ref); err == nil {
+						entry.Href = ref.Href
+					}
+				}
+				entries[doc.Key] = entry
+			}
 			switch {
 			case slices.Contains(c.cfg.ProfileSchemas, doc.Schema):
 				user, ok, err := normalize.NormalizeUser(sd, doc.Schema, sourceServer, indexedAt)
@@ -743,6 +786,9 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 				if err := c.store.DeleteRecords(ctx, indexUID, spec); err != nil {
 					return err
 				}
+			}
+			if err := c.deleteCommunityEntries(ctx, target); err != nil {
+				return err
 			}
 		}
 	}

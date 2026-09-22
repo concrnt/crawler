@@ -13,6 +13,8 @@ crawl:
   pageLimit: 100
   overlap: "10s"
   maxPagesPerRun: 1000
+  activityInterval: "10m"
+  activityHalfLife: "168h"
   profileSchemas:
     - "https://schema.concrnt.world/p/main.json"
   communitySchemas:

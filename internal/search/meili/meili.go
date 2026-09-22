@@ -51,6 +51,19 @@ type ServerDocument struct {
 	Status            string         `json:"status"`
 }
 
+// CommunityActivityDocument is the precomputed activity of one community,
+// merged into its document in the communities index. A community with no
+// entries carries zeros and no lastPostAt (Meilisearch sorts documents missing
+// a sortable field last).
+type CommunityActivityDocument struct {
+	ID              string     `json:"id"`
+	ActivityScore   float64    `json:"activityScore"`
+	PostCount7d     int        `json:"postCount7d"`
+	PostCount30d    int        `json:"postCount30d"`
+	ActiveAuthors7d int        `json:"activeAuthors7d"`
+	LastPostAt      *time.Time `json:"lastPostAt,omitempty"`
+}
+
 type Store struct {
 	client      meilisearch.ServiceManager
 	taskTimeout time.Duration
@@ -92,7 +105,7 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 			uid:        CommunitiesIndex,
 			searchable: []string{"name", "shortname", "description", "owner", "cckv", "sourceServer"},
 			filterable: []string{"owner", "sourceServer", "schema", "ancestors"},
-			sortable:   []string{"createdAt", "indexedAt", "name"},
+			sortable:   []string{"createdAt", "indexedAt", "name", "activityScore", "postCount7d", "postCount30d", "activeAuthors7d", "lastPostAt"},
 		},
 		{
 			uid:        UsersIndex,
@@ -161,12 +174,28 @@ func (s *Store) UpsertUsers(ctx context.Context, docs []normalize.UserDocument) 
 	return s.waitTask(ctx, task, err)
 }
 
+// UpsertCommunities merges (PUT) rather than replaces so the activity fields
+// written by UpdateCommunityActivity survive a re-commit of the community
+// record. CommunityDocument emits every field, so the merge is a full overwrite
+// of the record-derived part.
 func (s *Store) UpsertCommunities(ctx context.Context, docs []normalize.CommunityDocument) error {
 	if len(docs) == 0 {
 		return nil
 	}
 	index := s.client.Index(CommunitiesIndex)
-	task, err := index.AddDocumentsWithContext(ctx, docs, "id")
+	task, err := index.UpdateDocumentsWithContext(ctx, docs, "id")
+	return s.waitTask(ctx, task, err)
+}
+
+// UpdateCommunityActivity merges activity fields into existing community
+// documents. Callers pass only communities that are in the index: a merge into
+// an unknown id would create a document holding nothing but activity.
+func (s *Store) UpdateCommunityActivity(ctx context.Context, docs []CommunityActivityDocument) error {
+	if len(docs) == 0 {
+		return nil
+	}
+	index := s.client.Index(CommunitiesIndex)
+	task, err := index.UpdateDocumentsWithContext(ctx, docs, "id")
 	return s.waitTask(ctx, task, err)
 }
 

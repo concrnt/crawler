@@ -59,3 +59,27 @@ type ReplicationCursor struct {
 	LastError      string `gorm:"type:text"`
 	FailCount      int
 }
+
+// IndexedCommunity mirrors the community keys held in the communities index.
+// An incoming record is counted as community activity when its parent key is
+// in here; the mirror is updated in log order alongside the index, so a
+// community's creation commit is seen before the references delivered to it.
+type IndexedCommunity struct {
+	CCKV      string `gorm:"primaryKey;type:text"`
+	IndexedAt time.Time
+}
+
+// CommunityEntry is one record committed directly under a community key,
+// normally the reference record a distribution (CIP-7) leaves there. CreatedAt
+// is the record's own createdAt: for a reference that is the delivering
+// server's clock, not the author's. Href is the referenced document's key
+// (empty for a non-reference record): deleting the original document sweeps
+// its references server-side without a commit of their own (CIP-4 §6.1), so
+// the delete commit for the original is matched against it here.
+type CommunityEntry struct {
+	CommunityCCKV string    `gorm:"primaryKey;type:text"`
+	EntryCCKV     string    `gorm:"primaryKey;type:text"`
+	Author        string    `gorm:"type:text"`
+	Href          string    `gorm:"type:text;index"`
+	CreatedAt     time.Time `gorm:"index"`
+}

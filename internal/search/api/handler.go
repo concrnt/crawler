@@ -78,9 +78,14 @@ func (h *Handler) searchCommunities(c echo.Context) error {
 		"owner":        true,
 	})
 	return h.search(c, meili.CommunitiesIndex, filter, map[string]bool{
-		"createdAt": true,
-		"indexedAt": true,
-		"name":      true,
+		"createdAt":       true,
+		"indexedAt":       true,
+		"name":            true,
+		"activityScore":   true,
+		"postCount7d":     true,
+		"postCount30d":    true,
+		"activeAuthors7d": true,
+		"lastPostAt":      true,
 	}, "createdAt:desc")
 }
 
