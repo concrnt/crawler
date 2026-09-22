@@ -115,16 +115,23 @@ func (c *Crawler) crawlLoop(ctx context.Context) {
 func (c *Crawler) runDiscovery(ctx context.Context) {
 	if err := c.DiscoverOnce(ctx); err != nil {
 		c.logger.Warn("server discovery failed", slog.String("error", err.Error()))
+		discoveryRuns.WithLabelValues(resultError).Inc()
+		return
 	}
+	discoveryRuns.WithLabelValues(resultOK).Inc()
 }
 
 func (c *Crawler) runCrawl(ctx context.Context) {
 	started := time.Now()
-	if err := c.CrawlOnce(ctx); err != nil {
+	err := c.CrawlOnce(ctx)
+	crawlRunDuration.Observe(time.Since(started).Seconds())
+	if err != nil {
 		c.logger.Warn("crawl failed", slog.String("error", err.Error()), slog.String("elapsed", time.Since(started).Round(time.Millisecond).String()))
+		crawlRuns.WithLabelValues(resultError).Inc()
 		return
 	}
 	c.logger.Info("crawl completed", slog.String("elapsed", time.Since(started).Round(time.Millisecond).String()))
+	crawlRuns.WithLabelValues(resultOK).Inc()
 }
 
 func (c *Crawler) DiscoverOnce(ctx context.Context) error {
@@ -483,10 +490,13 @@ func (c *Crawler) crawlServer(ctx context.Context, state model.ServerState) erro
 	if err := c.db.WithContext(ctx).Model(&model.ServerState{}).Where("domain = ?", state.Domain).Updates(updates).Error; err != nil {
 		return err
 	}
+	serverCrawlDuration.Observe(finished.Sub(now).Seconds())
 	if joined != nil {
 		c.logger.Warn("server crawl failed", slog.String("server", state.Domain), slog.String("elapsed", finished.Sub(now).Round(time.Millisecond).String()), slog.String("error", joined.Error()))
+		serverCrawls.WithLabelValues(state.Domain, resultError).Inc()
 	} else {
 		c.logger.Info("server crawl completed", slog.String("server", state.Domain), slog.String("elapsed", finished.Sub(now).Round(time.Millisecond).String()))
+		serverCrawls.WithLabelValues(state.Domain, resultOK).Inc()
 	}
 	return joined
 }
@@ -562,17 +572,26 @@ func (c *Crawler) fetchReplication(ctx context.Context, wkc concrnt.WellKnownCon
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.client.GetClient().Do(req)
 	if err != nil {
+		replicationRequests.WithLabelValues(wkc.Domain, resultError).Inc()
 		return concrnt.QueryResult{}, fmt.Errorf("request replication: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return concrnt.QueryResult{}, &replicationStatusError{Domain: wkc.Domain, Status: resp.StatusCode}
+		statusErr := &replicationStatusError{Domain: wkc.Domain, Status: resp.StatusCode}
+		result := resultError
+		if statusErr.Transient() {
+			result = resultTransient
+		}
+		replicationRequests.WithLabelValues(wkc.Domain, result).Inc()
+		return concrnt.QueryResult{}, statusErr
 	}
 
 	var out concrnt.QueryResult
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		replicationRequests.WithLabelValues(wkc.Domain, resultError).Inc()
 		return concrnt.QueryResult{}, fmt.Errorf("decode replication: %w", err)
 	}
+	replicationRequests.WithLabelValues(wkc.Domain, resultOK).Inc()
 	return out, nil
 }
 
@@ -610,6 +629,7 @@ func (c *Crawler) replicate(ctx context.Context, wkc concrnt.WellKnownConcrnt, c
 		if err := c.applyPage(ctx, wkc.Domain, result.Items); err != nil {
 			return false, err
 		}
+		replicationPages.WithLabelValues(wkc.Domain).Inc()
 		// cursors are computed before read-access filtering, so items may be
 		// short or empty while next is still non-nil. next == nil is the only
 		// end-of-feed signal.
@@ -718,6 +738,7 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 		var doc concrnt.Document[json.RawMessage]
 		if err := json.Unmarshal([]byte(sd.Document), &doc); err != nil {
 			c.logger.Warn("skipping malformed commit", slog.String("server", sourceServer), slog.String("error", err.Error()))
+			replicationMalformed.WithLabelValues(sourceServer, "commit").Inc()
 			continue
 		}
 		switch doc.Kind {
@@ -739,46 +760,64 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 					}
 				}
 				entries[doc.Key] = entry
+				replicationCommits.WithLabelValues(sourceServer, "entry").Inc()
 			}
 			switch {
 			case slices.Contains(c.cfg.ProfileSchemas, doc.Schema):
 				user, ok, err := normalize.NormalizeUser(sd, doc.Schema, sourceServer, indexedAt)
 				if err != nil {
 					c.logger.Warn("skipping malformed profile", slog.String("server", sourceServer), slog.String("schema", doc.Schema), slog.String("error", err.Error()))
+					replicationMalformed.WithLabelValues(sourceServer, "profile").Inc()
 					continue
 				}
 				if ok {
 					users[user.ID] = user
+					replicationCommits.WithLabelValues(sourceServer, "user").Inc()
+				} else {
+					replicationCommits.WithLabelValues(sourceServer, "ignored").Inc()
 				}
 			case slices.Contains(c.cfg.CommunitySchemas, doc.Schema):
 				community, ok, err := normalize.NormalizeCommunity(sd, doc.Schema, sourceServer, indexedAt)
 				if err != nil {
 					c.logger.Warn("skipping malformed community", slog.String("server", sourceServer), slog.String("schema", doc.Schema), slog.String("error", err.Error()))
+					replicationMalformed.WithLabelValues(sourceServer, "community").Inc()
 					continue
 				}
 				if ok {
 					communities[community.ID] = community
+					replicationCommits.WithLabelValues(sourceServer, "community").Inc()
+				} else {
+					replicationCommits.WithLabelValues(sourceServer, "ignored").Inc()
 				}
 			case slices.Contains(c.cfg.PostSchemas, doc.Schema):
 				post, ok, err := normalize.NormalizePost(sd, doc.Schema, sourceServer, indexedAt)
 				if err != nil {
 					c.logger.Warn("skipping malformed post", slog.String("server", sourceServer), slog.String("schema", doc.Schema), slog.String("error", err.Error()))
+					replicationMalformed.WithLabelValues(sourceServer, "post").Inc()
 					continue
 				}
 				if ok {
 					posts[post.ID] = post
+					replicationCommits.WithLabelValues(sourceServer, "post").Inc()
+				} else {
+					replicationCommits.WithLabelValues(sourceServer, "ignored").Inc()
 				}
+			default:
+				replicationCommits.WithLabelValues(sourceServer, "ignored").Inc()
 			}
 		case "delete":
 			var target string
 			if err := json.Unmarshal(doc.Value, &target); err != nil || target == "" {
 				c.logger.Warn("skipping malformed delete", slog.String("server", sourceServer))
+				replicationMalformed.WithLabelValues(sourceServer, "delete").Inc()
 				continue
 			}
 			spec := meili.DeleteSpecForTarget(target)
 			if spec.IsEmpty() {
+				replicationCommits.WithLabelValues(sourceServer, "ignored").Inc()
 				continue
 			}
+			replicationCommits.WithLabelValues(sourceServer, "delete").Inc()
 			if err := flush(); err != nil {
 				return err
 			}
@@ -790,6 +829,8 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 			if err := c.deleteCommunityEntries(ctx, target); err != nil {
 				return err
 			}
+		default:
+			replicationCommits.WithLabelValues(sourceServer, "ignored").Inc()
 		}
 	}
 	return flush()

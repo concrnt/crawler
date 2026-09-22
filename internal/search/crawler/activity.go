@@ -142,9 +142,14 @@ func (c *Crawler) activityLoop(ctx context.Context) {
 
 func (c *Crawler) runActivityRefresh(ctx context.Context) {
 	started := time.Now()
-	if err := c.RefreshCommunityActivity(ctx, started.UTC()); err != nil {
+	err := c.RefreshCommunityActivity(ctx, started.UTC())
+	activityRefreshDuration.Observe(time.Since(started).Seconds())
+	if err != nil {
 		c.logger.Warn("community activity refresh failed", slog.String("error", err.Error()), slog.String("elapsed", time.Since(started).Round(time.Millisecond).String()))
+		activityRefreshes.WithLabelValues(resultError).Inc()
+		return
 	}
+	activityRefreshes.WithLabelValues(resultOK).Inc()
 }
 
 // RefreshCommunityActivity recomputes the activity of every indexed community

@@ -12,6 +12,7 @@ import (
 	"github.com/concrnt/concrnt"
 	"github.com/concrnt/concrnt-crawler/internal/search/normalize"
 	meilisearch "github.com/meilisearch/meilisearch-go"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (
@@ -169,6 +170,7 @@ func (s *Store) UpsertServers(ctx context.Context, docs []ServerDocument) error 
 	if len(docs) == 0 {
 		return nil
 	}
+	defer prometheus.NewTimer(meiliWriteDuration.WithLabelValues("servers")).ObserveDuration()
 	index := s.client.Index(ServersIndex)
 	task, err := index.AddDocumentsWithContext(ctx, docs, "id")
 	return s.waitTask(ctx, task, err)
@@ -178,6 +180,7 @@ func (s *Store) UpsertUsers(ctx context.Context, docs []normalize.UserDocument) 
 	if len(docs) == 0 {
 		return nil
 	}
+	defer prometheus.NewTimer(meiliWriteDuration.WithLabelValues("users")).ObserveDuration()
 	index := s.client.Index(UsersIndex)
 	task, err := index.AddDocumentsWithContext(ctx, docs, "id")
 	return s.waitTask(ctx, task, err)
@@ -191,6 +194,7 @@ func (s *Store) UpsertCommunities(ctx context.Context, docs []normalize.Communit
 	if len(docs) == 0 {
 		return nil
 	}
+	defer prometheus.NewTimer(meiliWriteDuration.WithLabelValues("communities")).ObserveDuration()
 	index := s.client.Index(CommunitiesIndex)
 	task, err := index.UpdateDocumentsWithContext(ctx, docs, "id")
 	return s.waitTask(ctx, task, err)
@@ -203,6 +207,7 @@ func (s *Store) UpdateCommunityActivity(ctx context.Context, docs []CommunityAct
 	if len(docs) == 0 {
 		return nil
 	}
+	defer prometheus.NewTimer(meiliWriteDuration.WithLabelValues("activity")).ObserveDuration()
 	index := s.client.Index(CommunitiesIndex)
 	task, err := index.UpdateDocumentsWithContext(ctx, docs, "id")
 	return s.waitTask(ctx, task, err)
@@ -212,6 +217,7 @@ func (s *Store) UpsertPosts(ctx context.Context, docs []normalize.PostDocument) 
 	if len(docs) == 0 {
 		return nil
 	}
+	defer prometheus.NewTimer(meiliWriteDuration.WithLabelValues("posts")).ObserveDuration()
 	index := s.client.Index(PostsIndex)
 	task, err := index.AddDocumentsWithContext(ctx, docs, "id")
 	return s.waitTask(ctx, task, err)
@@ -220,6 +226,7 @@ func (s *Store) UpsertPosts(ctx context.Context, docs []normalize.PostDocument) 
 // DeleteRecords applies a delete commit to one index. Each task is awaited so
 // a failed delete surfaces before the replication cursor moves past it.
 func (s *Store) DeleteRecords(ctx context.Context, indexUID string, spec DeleteSpec) error {
+	defer prometheus.NewTimer(meiliWriteDuration.WithLabelValues("delete")).ObserveDuration()
 	index := s.client.Index(indexUID)
 	if len(spec.IDs) > 0 {
 		task, err := index.DeleteDocumentsWithContext(ctx, spec.IDs)

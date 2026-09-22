@@ -15,6 +15,7 @@ import (
 	"github.com/concrnt/concrnt-crawler/internal/search/model"
 	"github.com/concrnt/concrnt/client"
 	"github.com/glebarez/sqlite"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -149,6 +150,7 @@ func TestCrawlServerAppliesCommitsInLogOrder(t *testing.T) {
 	}}
 	store := &manualStore{}
 	c := newReplicationCrawler(t, server, store, config.Default().Crawl)
+	resetCounters()
 
 	if err := c.crawlServer(context.Background(), model.ServerState{Domain: replicationDomain}); err != nil {
 		t.Fatal(err)
@@ -178,6 +180,39 @@ func TestCrawlServerAppliesCommitsInLogOrder(t *testing.T) {
 	if cursor.CaughtUpAt == nil || cursor.FailCount != 0 {
 		t.Fatalf("cursor should be caught up without failures: %+v", cursor)
 	}
+
+	// entity, association and the list schema are ignored; the community
+	// record sits directly under a domain-owned key, so it is also an entry
+	// candidate; the user-owned community is rejected by normalization
+	for kind, want := range map[string]float64{"post": 3, "user": 1, "community": 1, "delete": 1, "entry": 1, "ignored": 3} {
+		if got := testutil.ToFloat64(replicationCommits.WithLabelValues(replicationDomain, kind)); got != want {
+			t.Errorf("commits_total{kind=%q} = %v, want %v", kind, got, want)
+		}
+	}
+	for kind, want := range map[string]float64{"commit": 1, "community": 1} {
+		if got := testutil.ToFloat64(replicationMalformed.WithLabelValues(replicationDomain, kind)); got != want {
+			t.Errorf("malformed_total{kind=%q} = %v, want %v", kind, got, want)
+		}
+	}
+	if got := testutil.ToFloat64(replicationRequests.WithLabelValues(replicationDomain, resultOK)); got != 2 {
+		t.Errorf("requests_total{result=ok} = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(replicationPages.WithLabelValues(replicationDomain)); got != 2 {
+		t.Errorf("pages_total = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(serverCrawls.WithLabelValues(replicationDomain, resultOK)); got != 1 {
+		t.Errorf("crawls_total{result=ok} = %v, want 1", got)
+	}
+}
+
+// the counters are package-level and every test crawls replicationDomain, so
+// a test that asserts counts starts from zero
+func resetCounters() {
+	replicationRequests.Reset()
+	replicationPages.Reset()
+	replicationCommits.Reset()
+	replicationMalformed.Reset()
+	serverCrawls.Reset()
 }
 
 func TestReplicateResumesBehindCursorAndContinuesPastEmptyPages(t *testing.T) {
@@ -235,10 +270,17 @@ func TestReplicateRejectsBackwardsCursor(t *testing.T) {
 		stamp(t1): {Items: nil, Prev: &t1, Next: &t0},
 	}}
 	c := newReplicationCrawler(t, server, &manualStore{}, config.Default().Crawl)
+	resetCounters()
 
 	err := c.crawlServer(context.Background(), model.ServerState{Domain: replicationDomain})
 	if err == nil || !strings.Contains(err.Error(), "backwards") {
 		t.Fatalf("expected a backwards-cursor error, got %v", err)
+	}
+	if got := testutil.ToFloat64(replicationRequests.WithLabelValues(replicationDomain, resultOK)); got != 2 {
+		t.Errorf("requests_total{result=ok} = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(serverCrawls.WithLabelValues(replicationDomain, resultError)); got != 1 {
+		t.Errorf("crawls_total{result=error} = %v, want 1", got)
 	}
 	cursor := loadCursor(t, c)
 	if cursor.FailCount != 1 || cursor.LastErrorAt == nil {
@@ -287,8 +329,15 @@ func TestCrawlServerTreatsRateLimitAsTransient(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	resetCounters()
 	if err := c.crawlServer(context.Background(), model.ServerState{Domain: replicationDomain}); err != nil {
 		t.Fatalf("429 must not be reported as a crawl failure: %v", err)
+	}
+	if got := testutil.ToFloat64(replicationRequests.WithLabelValues(replicationDomain, resultTransient)); got != 1 {
+		t.Errorf("requests_total{result=transient} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(serverCrawls.WithLabelValues(replicationDomain, resultOK)); got != 1 {
+		t.Errorf("a paused run still completes the crawl: crawls_total{result=ok} = %v, want 1", got)
 	}
 	got := loadCursor(t, c)
 	if got.FailCount != 0 || got.LastErrorAt != nil || got.CursorAt == nil || !got.CursorAt.Equal(t1) {

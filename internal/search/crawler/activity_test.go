@@ -13,6 +13,7 @@ import (
 	"github.com/concrnt/concrnt-crawler/internal/search/meili"
 	"github.com/concrnt/concrnt-crawler/internal/search/model"
 	"github.com/concrnt/concrnt-crawler/internal/search/normalize"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 const (
@@ -78,12 +79,19 @@ func TestApplyPageRecordsEntriesUnderIndexedCommunities(t *testing.T) {
 		// a post committed directly under the community counts too, whatever its schema
 		commit(t, "record", general+"/direct", config.DefaultPostSchemas[0], map[string]string{"body": "hi"}, ""),
 	}
+	resetCounters()
 	if err := c.applyPage(ctx, replicationDomain, page); err != nil {
 		t.Fatal(err)
 	}
 
 	if mirror := loadMirror(t, c); len(mirror) != 1 || mirror[0] != general {
 		t.Fatalf("mirror should hold the domain-owned community only, got %v", mirror)
+	}
+	// every record keyed directly under a domain-owned parent is an entry
+	// candidate: the community itself, ref1 twice, the unknown parent, the
+	// grandchild, direct
+	if got := testutil.ToFloat64(replicationCommits.WithLabelValues(replicationDomain, "entry")); got != 6 {
+		t.Errorf("commits_total{kind=entry} = %v, want 6", got)
 	}
 	entries := loadEntries(t, c)
 	if len(entries) != 2 || entries[0].EntryCCKV != general+"/direct" || entries[1].EntryCCKV != general+"/ref1" {

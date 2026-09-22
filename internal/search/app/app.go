@@ -17,6 +17,9 @@ import (
 	"github.com/concrnt/concrnt/client"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/labstack/echo/otelecho"
 )
 
@@ -36,6 +39,11 @@ func Run(ctx context.Context, cfg searchconfig.Config, version string) error {
 	if err := database.Migrate(db); err != nil {
 		return fmt.Errorf("migrate postgres: %w", err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
+	}
+	prometheus.MustRegister(collectors.NewDBStatsCollector(sqlDB, "concrnt_crawler"))
 
 	meiliClient := meili.NewClient(cfg.Backends.MeiliHost, cfg.Backends.MeiliAPIKey)
 	// a settings update re-indexes the whole index in one task
@@ -72,10 +80,38 @@ func Run(ctx context.Context, cfg searchconfig.Config, version string) error {
 
 	api.New(db, searchStore, searchCrawler).RegisterRoutes(e)
 
-	serverErr := make(chan error, 1)
+	prometheus.MustRegister(crawler.NewProgressCollector(db, cfg.Crawl.Layer))
+	prometheus.MustRegister(meili.NewStatsCollector(searchStore))
+	// the usual *_build_info shape: a constant 1 whose labels carry the build
+	// identity, so dashboards can filter and join on the running version
+	buildInfo := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   "crawler",
+		Name:        "build_info",
+		Help:        "Build information of the running concrnt-crawler; the value is always 1.",
+		ConstLabels: prometheus.Labels{"version": version},
+	})
+	buildInfo.Set(1)
+	prometheus.MustRegister(buildInfo)
+
+	// operational listener: /metrics and /health only, no middleware but
+	// Recover; never exposed outside the cluster (the public listener is
+	// behind cloudflared)
+	internal := echo.New()
+	internal.HideBanner = true
+	internal.HidePort = true
+	internal.Use(middleware.Recover())
+	internal.GET("/health", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+	internal.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
+
+	serverErr := make(chan error, 2)
 	go func() {
-		slog.Info("concrnt-crawler starting", slog.String("listen", cfg.Server.Listen), slog.String("version", version))
+		slog.Info("concrnt-crawler starting", slog.String("listen", cfg.Server.Listen), slog.String("internalListen", cfg.Server.InternalListen), slog.String("version", version))
 		serverErr <- e.Start(cfg.Server.Listen)
+	}()
+	go func() {
+		serverErr <- internal.Start(cfg.Server.InternalListen)
 	}()
 
 	select {
@@ -90,6 +126,9 @@ func Run(ctx context.Context, cfg searchconfig.Config, version string) error {
 	defer cancel()
 	if err := e.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown server: %w", err)
+	}
+	if err := internal.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("shutdown internal server: %w", err)
 	}
 	return nil
 }

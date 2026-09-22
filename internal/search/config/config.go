@@ -69,6 +69,8 @@ type Config struct {
 type Server struct {
 	Listen    string `yaml:"listen"`
 	PublicURL string `yaml:"publicURL"`
+	// operational listener (/metrics, /health); never expose it publicly
+	InternalListen string `yaml:"internalListen"`
 }
 
 type Crawl struct {
@@ -104,7 +106,8 @@ type Observability struct {
 func Default() Config {
 	return Config{
 		Server: Server{
-			Listen: ":8080",
+			Listen:         ":8080",
+			InternalListen: ":8081",
 		},
 		Crawl: Crawl{
 			KnownServersInterval: Duration(10 * time.Minute),
@@ -162,6 +165,9 @@ func Load(path string) (Config, error) {
 func (c *Config) Validate() error {
 	if c.Server.Listen == "" {
 		c.Server.Listen = ":8080"
+	}
+	if c.Server.InternalListen == "" {
+		c.Server.InternalListen = ":8081"
 	}
 	if c.Crawl.Seed == "" {
 		return fmt.Errorf("crawl.seed is required")

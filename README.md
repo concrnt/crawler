@@ -46,6 +46,7 @@ Minimal example:
 server:
   listen: ":8080"
   publicURL: "http://localhost:8080"
+  internalListen: ":8081"
 
 crawl:
   seed: "ariake.concrnt.net"
@@ -81,6 +82,7 @@ observability:
   traceEndpoint: ""
 ```
 
+- `internalListen`: 運用用リスナー (`/metrics`, `/health`)。Prometheus が scrape する内部向けで、外部には公開しないでください (既定 `:8081`)。
 - `incrementalInterval`: replication feed をポーリングする間隔。追いついていない server は tick を待たずに読み続けます。
 - `overlap`: 前回の cursor からどれだけ戻って読み直すか。replication のソートキーは server の受理時刻で、コミット中に採番されるため数秒で十分です。
 - `maxPagesPerRun`: 1 run で読むページ数の上限。cursor はページごとに保存されます。
@@ -105,6 +107,32 @@ observability:
 - `kind: delete` (単一 key / `key/*` / `key*`) は entries にも反映されます。元投稿の削除に伴う reference の掃除はサーバー内部で行われ
   replication には reference key の delete として現れないため (CIP-4 §6.1)、reference の `value.href` も削除対象の照合に使います。
 - 既に稼働している環境へ入れる場合、過去分は `replication_cursors` を削除して再クロールしてください (互換処理はありません)。
+
+## Metrics
+
+`internalListen` (既定 `:8081`) の `GET /metrics` で Prometheus 形式のメトリクスを返します。クロール対象ごとの進捗は `server` ラベル (FQDN) 付きのゲージで、scrape のたびに Postgres の `server_states` / `replication_cursors` を読んで出します。
+
+| metric | 内容 |
+| --- | --- |
+| `crawler_replication_cursor_timestamp_seconds{server}` | replication cursor の位置 (server 側の受理時刻)。遅延は `time() - この値` |
+| `crawler_replication_caught_up{server}` | 直近の run で feed を読み切っていれば 1、追いつき中なら 0 |
+| `crawler_replication_caught_up_timestamp_seconds{server}` / `crawler_replication_last_finished_timestamp_seconds{server}` | 最後に読み切った時刻 / 最後にページを適用した時刻 |
+| `crawler_replication_backoff{server}` | 失敗の backoff でスキップ中なら 1 |
+| `crawler_replication_consecutive_failures{server}` / `crawler_server_consecutive_failures{server}` | cursor / server に記録された連続失敗回数 |
+| `crawler_server_last_crawled_timestamp_seconds{server}` / `crawler_server_disabled{server}` | 最後にクロールした時刻 / クロール対象外なら 1 |
+| `crawler_replication_requests_total{server,result}` | replication 要求数 (`ok` / `transient` = 429・503 / `error`) |
+| `crawler_replication_pages_total{server}` / `crawler_replication_commits_total{server,kind}` / `crawler_replication_malformed_total{server,kind}` | 適用したページ数 / 処理した commit 数 (`user` `community` `post` `entry` `delete` `ignored`) / 解釈できず捨てた commit 数 |
+| `crawler_crawl_runs_total{result}` / `crawler_crawl_run_duration_seconds` | 全 server を回す run の回数と所要時間 |
+| `crawler_server_crawls_total{server,result}` / `crawler_server_crawl_duration_seconds` | server 単位のクロール回数と所要時間 |
+| `crawler_discovery_runs_total{result}` / `crawler_activity_refreshes_total{result}` / `crawler_activity_refresh_duration_seconds` | known-servers 取得 / 活動量再集計の回数と所要時間 |
+| `crawler_index_documents{index}` / `crawler_index_indexing{index}` | Meilisearch 各索引の文書数 / 索引処理中なら 1 |
+| `crawler_meili_write_duration_seconds{op}` | Meilisearch 書き込み (task 完了待ち込み) の所要時間 |
+| `crawler_build_info{version}` | 常に 1。ラベルにバージョン |
+
+server 総数や追いつき済みの数は PromQL で `count(crawler_server_disabled == 0)` / `count(crawler_replication_caught_up == 1)` のように導出してください。
+concrnt client 由来の `concrnt_peer_requests_total{host,code}` / `concrnt_peer_request_duration_seconds{host}` と Go / `go_sql_*` の標準メトリクスも同じエンドポイントに出ます。
+
+Grafana ダッシュボードは [`docs/dashboards/crawler.json`](docs/dashboards/crawler.json) にあります。
 
 ## API
 
