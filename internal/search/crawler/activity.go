@@ -152,7 +152,8 @@ func (c *Crawler) runActivityRefresh(ctx context.Context) {
 // score is a sum over the last 30 days of 2^(-age/halfLife), so it decays on
 // its own between refreshes only in the sense that each refresh re-ages the
 // entries; the arithmetic runs in Go because the test database (sqlite) has no
-// exp().
+// exp(). The same pass buckets the entries into a per-UTC-day history of
+// activityHistoryDays days ending today.
 func (c *Crawler) RefreshCommunityActivity(ctx context.Context, now time.Time) error {
 	var communities []string
 	if err := c.db.WithContext(ctx).Model(&model.IndexedCommunity{}).Order("cckv asc").Pluck("cckv", &communities).Error; err != nil {
@@ -167,10 +168,17 @@ func (c *Crawler) RefreshCommunityActivity(ctx context.Context, now time.Time) e
 		Author        string
 		CreatedAt     time.Time
 	}
+	historyDays := c.cfg.ActivityHistoryDays
+	historyStart := now.UTC().Truncate(24*time.Hour).AddDate(0, 0, -(historyDays - 1))
+	// the fetch covers whichever of the score window and the history is longer
+	since := now.Add(-activityWindow)
+	if historyStart.Before(since) {
+		since = historyStart
+	}
 	var entries []recent
 	if err := c.db.WithContext(ctx).Model(&model.CommunityEntry{}).
 		Select("community_cckv", "author", "created_at").
-		Where("created_at > ?", now.Add(-activityWindow)).
+		Where("created_at > ?", since).
 		Find(&entries).Error; err != nil {
 		return err
 	}
@@ -188,9 +196,14 @@ func (c *Crawler) RefreshCommunityActivity(ctx context.Context, now time.Time) e
 	halfLife := c.cfg.ActivityHalfLife.Duration().Seconds()
 	docs := make(map[string]*meili.CommunityActivityDocument, len(communities))
 	for _, key := range communities {
-		docs[key] = &meili.CommunityActivityDocument{ID: normalize.EncodeMeiliID(key)}
+		history := make([]meili.ActivityDay, historyDays)
+		for i := range history {
+			history[i].Date = historyStart.AddDate(0, 0, i).Format(time.DateOnly)
+		}
+		docs[key] = &meili.CommunityActivityDocument{ID: normalize.EncodeMeiliID(key), ActivityHistory: history}
 	}
 	authors := map[string]map[string]bool{}
+	dayAuthors := map[string]map[int]map[string]bool{}
 	for _, entry := range entries {
 		doc, ok := docs[entry.CommunityCCKV]
 		if !ok {
@@ -199,8 +212,10 @@ func (c *Crawler) RefreshCommunityActivity(ctx context.Context, now time.Time) e
 		// a future-dated entry counts as brand new rather than inflating
 		// beyond a weight of 1
 		age := max(now.Sub(entry.CreatedAt), 0)
-		doc.ActivityScore += math.Exp2(-age.Seconds() / halfLife)
-		doc.PostCount30d++
+		if age <= activityWindow {
+			doc.ActivityScore += math.Exp2(-age.Seconds() / halfLife)
+			doc.PostCount30d++
+		}
 		if age <= activityShortWindow {
 			doc.PostCount7d++
 			if authors[entry.CommunityCCKV] == nil {
@@ -208,9 +223,26 @@ func (c *Crawler) RefreshCommunityActivity(ctx context.Context, now time.Time) e
 			}
 			authors[entry.CommunityCCKV][entry.Author] = true
 		}
+		// future-dated entries land on today, matching age = 0 above
+		day := min(int(entry.CreatedAt.UTC().Truncate(24*time.Hour).Sub(historyStart)/(24*time.Hour)), historyDays-1)
+		if day >= 0 {
+			doc.ActivityHistory[day].Posts++
+			if dayAuthors[entry.CommunityCCKV] == nil {
+				dayAuthors[entry.CommunityCCKV] = map[int]map[string]bool{}
+			}
+			if dayAuthors[entry.CommunityCCKV][day] == nil {
+				dayAuthors[entry.CommunityCCKV][day] = map[string]bool{}
+			}
+			dayAuthors[entry.CommunityCCKV][day][entry.Author] = true
+		}
 	}
 	for key, set := range authors {
 		docs[key].ActiveAuthors7d = len(set)
+	}
+	for key, days := range dayAuthors {
+		for day, set := range days {
+			docs[key].ActivityHistory[day].Authors = len(set)
+		}
 	}
 	for _, row := range latests {
 		if doc, ok := docs[row.CommunityCCKV]; ok {
@@ -226,7 +258,7 @@ func (c *Crawler) RefreshCommunityActivity(ctx context.Context, now time.Time) e
 	if err := c.store.UpdateCommunityActivity(ctx, out); err != nil {
 		return fmt.Errorf("update community activity: %w", err)
 	}
-	c.logger.Info("community activity refreshed", slog.Int("communities", len(out)), slog.Int("entries", len(entries)), slog.String("elapsed", time.Since(now).Round(time.Millisecond).String()))
+	c.logger.Info("community activity refreshed", slog.Int("communities", len(out)), slog.Int("entries", len(entries)), slog.Int("historyDays", historyDays), slog.String("elapsed", time.Since(now).Round(time.Millisecond).String()))
 	return nil
 }
 

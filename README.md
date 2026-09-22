@@ -86,6 +86,7 @@ observability:
 - `maxPagesPerRun`: 1 run で読むページ数の上限。cursor はページごとに保存されます。
 - `activityInterval`: コミュニティの活動量を再集計して索引へ書き込む間隔 (既定 10m)。
 - `activityHalfLife`: `activityScore` の半減期 (既定 168h = 7 日)。
+- `activityHistoryDays`: `activityHistory` (日別の活動量) に持つ日数 (既定 30)。
 
 ## Community activity
 
@@ -99,6 +100,8 @@ observability:
   - `postCount7d` / `postCount30d`: 直近 7 日 / 30 日の着信数
   - `activeAuthors7d`: 直近 7 日のユニーク投稿者数
   - `lastPostAt`: 最新の着信時刻 (30 日より前でも出ます。着信が無ければ省略)
+  - `activityHistory`: 日別 (UTC) の `{date: "YYYY-MM-DD", posts, authors}` を古い日から今日まで `activityHistoryDays` 個。
+    着信の無い日も 0 で入り、末尾は当日 (集計時点までの途中経過) です。アクティビティグラフの描画用。
 - `kind: delete` (単一 key / `key/*` / `key*`) は entries にも反映されます。元投稿の削除に伴う reference の掃除はサーバー内部で行われ
   replication には reference key の delete として現れないため (CIP-4 §6.1)、reference の `value.href` も削除対象の照合に使います。
 - 既に稼働している環境へ入れる場合、過去分は `replication_cursors` を削除して再クロールしてください (互換処理はありません)。
@@ -126,6 +129,8 @@ GET /api/v1/search/users?q=alice&limit=20&offset=0&sourceServer=example.net&owne
 ```http
 GET /api/v1/search/communities?q=general&limit=20&offset=0&sourceServer=example.net&owner=example.net&sort=activityScore
 ```
+
+`cckv` を指定すると、そのコミュニティ 1 件を (活動量フィールドごと) 返します。
 
 `sort` は `createdAt` / `indexedAt` / `name` に加えて `activityScore` / `postCount7d` / `postCount30d` / `activeAuthors7d` / `lastPostAt` を受け付けます (方向省略時は `desc`、未指定時は `createdAt:desc`)。`sort=activityScore` がアクティブ順です。
 

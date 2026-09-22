@@ -3,12 +3,14 @@ package crawler
 import (
 	"context"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/concrnt/concrnt"
 	"github.com/concrnt/concrnt-crawler/internal/search/config"
+	"github.com/concrnt/concrnt-crawler/internal/search/meili"
 	"github.com/concrnt/concrnt-crawler/internal/search/model"
 	"github.com/concrnt/concrnt-crawler/internal/search/normalize"
 )
@@ -169,6 +171,7 @@ func TestRefreshCommunityActivity(t *testing.T) {
 	}
 	rows := []model.CommunityEntry{
 		{CommunityCCKV: general, EntryCCKV: general + "/a", Author: testAuthor, CreatedAt: now.Add(-1 * day)},
+		{CommunityCCKV: general, EntryCCKV: general + "/a2", Author: otherAuthor, CreatedAt: now.Add(-1*day + time.Hour)},
 		{CommunityCCKV: general, EntryCCKV: general + "/b", Author: testAuthor, CreatedAt: now.Add(-7 * day)},
 		{CommunityCCKV: general, EntryCCKV: general + "/c", Author: otherAuthor, CreatedAt: now.Add(-6 * day)},
 		{CommunityCCKV: general, EntryCCKV: general + "/d", Author: otherAuthor, CreatedAt: now.Add(-14 * day)},
@@ -194,13 +197,33 @@ func TestRefreshCommunityActivity(t *testing.T) {
 	}
 
 	g := store.activity[byID[normalize.EncodeMeiliID(general)]]
-	// a(1d) b(7d) c(6d) d(14d) f(future=0) are within 30d; e(31d) is out
-	if g.PostCount30d != 5 || g.PostCount7d != 4 || g.ActiveAuthors7d != 2 {
+	// a,a2(1d) b(7d) c(6d) d(14d) f(future=0) are within 30d; e(31d) is out
+	if g.PostCount30d != 6 || g.PostCount7d != 5 || g.ActiveAuthors7d != 2 {
 		t.Fatalf("unexpected counts: %+v", g)
 	}
-	wantScore := math.Exp2(-1.0/7) + math.Exp2(-1) + math.Exp2(-6.0/7) + math.Exp2(-2) + 1
+	wantScore := math.Exp2(-1.0/7) + math.Exp2(-23.0/(7*24)) + math.Exp2(-1) + math.Exp2(-6.0/7) + math.Exp2(-2) + 1
 	if math.Abs(g.ActivityScore-wantScore) > 1e-9 {
 		t.Fatalf("score = %v want %v", g.ActivityScore, wantScore)
+	}
+	// history: 30 UTC days ending today, zero-filled
+	if len(g.ActivityHistory) != 30 || g.ActivityHistory[0].Date != "2026-08-24" || g.ActivityHistory[29].Date != "2026-09-22" {
+		t.Fatalf("history should span 30 days ending today: %+v", g.ActivityHistory)
+	}
+	wantDays := map[int]meili.ActivityDay{
+		28: {Date: "2026-09-21", Posts: 2, Authors: 2}, // a, a2
+		22: {Date: "2026-09-15", Posts: 1, Authors: 1}, // b
+		23: {Date: "2026-09-16", Posts: 1, Authors: 1}, // c
+		15: {Date: "2026-09-08", Posts: 1, Authors: 1}, // d
+		29: {Date: "2026-09-22", Posts: 1, Authors: 1}, // f (future lands on today)
+	}
+	for i, got := range g.ActivityHistory {
+		want, ok := wantDays[i]
+		if !ok {
+			want = meili.ActivityDay{Date: got.Date}
+		}
+		if got != want {
+			t.Fatalf("history[%d] = %+v want %+v", i, got, want)
+		}
 	}
 	if g.LastPostAt == nil || !g.LastPostAt.Equal(now.Add(time.Hour)) {
 		t.Fatalf("lastPostAt should be the newest entry, got %v", g.LastPostAt)
@@ -210,10 +233,16 @@ func TestRefreshCommunityActivity(t *testing.T) {
 	if q.ActivityScore != 0 || q.PostCount30d != 0 || q.PostCount7d != 0 || q.ActiveAuthors7d != 0 || q.LastPostAt != nil {
 		t.Fatalf("quiet community should be all zeros: %+v", q)
 	}
+	if len(q.ActivityHistory) != 30 || slices.ContainsFunc(q.ActivityHistory, func(d meili.ActivityDay) bool { return d.Posts != 0 || d.Authors != 0 }) {
+		t.Fatalf("quiet community should have a zero-filled history: %+v", q.ActivityHistory)
+	}
 
 	s := store.activity[byID[normalize.EncodeMeiliID(stale)]]
 	if s.PostCount30d != 0 || s.ActivityScore != 0 || s.LastPostAt == nil || !s.LastPostAt.Equal(now.Add(-40*day)) {
 		t.Fatalf("stale community should keep lastPostAt beyond the window: %+v", s)
+	}
+	if slices.ContainsFunc(s.ActivityHistory, func(d meili.ActivityDay) bool { return d.Posts != 0 }) {
+		t.Fatalf("an entry older than the history must not appear: %+v", s.ActivityHistory)
 	}
 	if _, ok := byID[normalize.EncodeMeiliID("cckv://example.com/concrnt.world/communities/gone")]; ok {
 		t.Fatal("unindexed community must not be pushed")

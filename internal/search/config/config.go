@@ -84,6 +84,7 @@ type Crawl struct {
 	MaxPagesPerRun       int      `yaml:"maxPagesPerRun"`
 	ActivityInterval     Duration `yaml:"activityInterval"`
 	ActivityHalfLife     Duration `yaml:"activityHalfLife"`
+	ActivityHistoryDays  int      `yaml:"activityHistoryDays"`
 	ProfileSchemas       []string `yaml:"profileSchemas"`
 	CommunitySchemas     []string `yaml:"communitySchemas"`
 	PostSchemas          []string `yaml:"postSchemas"`
@@ -116,6 +117,7 @@ func Default() Config {
 			MaxPagesPerRun:       1000,
 			ActivityInterval:     Duration(10 * time.Minute),
 			ActivityHalfLife:     Duration(7 * 24 * time.Hour),
+			ActivityHistoryDays:  30,
 			ProfileSchemas:       []string{DefaultProfileSchema},
 			CommunitySchemas:     []string{DefaultCommunitySchema},
 			PostSchemas:          append([]string(nil), DefaultPostSchemas...),
@@ -197,6 +199,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Crawl.ActivityHalfLife.Duration() <= 0 {
 		c.Crawl.ActivityHalfLife = Duration(7 * 24 * time.Hour)
+	}
+	if c.Crawl.ActivityHistoryDays <= 0 {
+		c.Crawl.ActivityHistoryDays = 30
 	}
 	if len(c.Crawl.ProfileSchemas) == 0 {
 		c.Crawl.ProfileSchemas = []string{DefaultProfileSchema}

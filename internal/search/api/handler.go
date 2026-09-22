@@ -70,12 +70,15 @@ func (h *Handler) searchUsers(c echo.Context) error {
 }
 
 func (h *Handler) searchCommunities(c echo.Context) error {
+	// cckv fetches one community by key (with its activity fields)
 	filter := meili.BuildFilter(map[string]string{
 		"sourceServer": c.QueryParam("sourceServer"),
 		"owner":        c.QueryParam("owner"),
+		"cckv":         c.QueryParam("cckv"),
 	}, map[string]bool{
 		"sourceServer": true,
 		"owner":        true,
+		"cckv":         true,
 	})
 	return h.search(c, meili.CommunitiesIndex, filter, map[string]bool{
 		"createdAt":       true,

@@ -51,17 +51,26 @@ type ServerDocument struct {
 	Status            string         `json:"status"`
 }
 
+// ActivityDay is one UTC day of a community's activity history.
+type ActivityDay struct {
+	Date    string `json:"date"` // YYYY-MM-DD
+	Posts   int    `json:"posts"`
+	Authors int    `json:"authors"` // distinct authors that day
+}
+
 // CommunityActivityDocument is the precomputed activity of one community,
 // merged into its document in the communities index. A community with no
 // entries carries zeros and no lastPostAt (Meilisearch sorts documents missing
-// a sortable field last).
+// a sortable field last). ActivityHistory runs oldest day first and ends with
+// the current (partial) day; every day in the window is present, zero-filled.
 type CommunityActivityDocument struct {
-	ID              string     `json:"id"`
-	ActivityScore   float64    `json:"activityScore"`
-	PostCount7d     int        `json:"postCount7d"`
-	PostCount30d    int        `json:"postCount30d"`
-	ActiveAuthors7d int        `json:"activeAuthors7d"`
-	LastPostAt      *time.Time `json:"lastPostAt,omitempty"`
+	ID              string        `json:"id"`
+	ActivityScore   float64       `json:"activityScore"`
+	PostCount7d     int           `json:"postCount7d"`
+	PostCount30d    int           `json:"postCount30d"`
+	ActiveAuthors7d int           `json:"activeAuthors7d"`
+	LastPostAt      *time.Time    `json:"lastPostAt,omitempty"`
+	ActivityHistory []ActivityDay `json:"activityHistory"`
 }
 
 type Store struct {
@@ -104,7 +113,7 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 		{
 			uid:        CommunitiesIndex,
 			searchable: []string{"name", "shortname", "description", "owner", "cckv", "sourceServer"},
-			filterable: []string{"owner", "sourceServer", "schema", "ancestors"},
+			filterable: []string{"owner", "sourceServer", "schema", "ancestors", "cckv"},
 			sortable:   []string{"createdAt", "indexedAt", "name", "activityScore", "postCount7d", "postCount30d", "activeAuthors7d", "lastPostAt"},
 		},
 		{
