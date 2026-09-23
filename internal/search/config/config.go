@@ -19,6 +19,8 @@ const (
 const (
 	DefaultProfileSchema   = "https://schema.concrnt.world/p/main.json"
 	DefaultCommunitySchema = "https://schema.concrnt.world/t/community.json"
+	// DefaultAckSchema is the ack schema world uses for a follow (CIP-10)
+	DefaultAckSchema = "https://schema.concrnt.world/ack/follow.json"
 )
 
 // DefaultPostSchemas are the world message schemas indexed as posts.
@@ -90,6 +92,7 @@ type Crawl struct {
 	ProfileSchemas       []string `yaml:"profileSchemas"`
 	CommunitySchemas     []string `yaml:"communitySchemas"`
 	PostSchemas          []string `yaml:"postSchemas"`
+	AckSchemas           []string `yaml:"ackSchemas"`
 }
 
 type Backends struct {
@@ -124,6 +127,7 @@ func Default() Config {
 			ProfileSchemas:       []string{DefaultProfileSchema},
 			CommunitySchemas:     []string{DefaultCommunitySchema},
 			PostSchemas:          append([]string(nil), DefaultPostSchemas...),
+			AckSchemas:           []string{DefaultAckSchema},
 		},
 		Backends: Backends{
 			MeiliHost: "http://meilisearch:7700",
@@ -217,6 +221,9 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Crawl.PostSchemas) == 0 {
 		c.Crawl.PostSchemas = append([]string(nil), DefaultPostSchemas...)
+	}
+	if len(c.Crawl.AckSchemas) == 0 {
+		c.Crawl.AckSchemas = []string{DefaultAckSchema}
 	}
 	if c.Backends.PostgresDsn == "" {
 		return fmt.Errorf("backends.postgresDsn is required")

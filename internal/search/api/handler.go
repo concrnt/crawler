@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/concrnt/concrnt-crawler/internal/search/crawler"
 	"github.com/concrnt/concrnt-crawler/internal/search/meili"
@@ -18,6 +19,7 @@ import (
 
 type SearchStore interface {
 	Search(ctx context.Context, indexUID string, query string, limit int64, offset int64, filter string, sort []string) (*meilisearch.SearchResponse, error)
+	FetchDocuments(ctx context.Context, indexUID string, filter string, limit int64) ([]map[string]any, error)
 	Stats(ctx context.Context) (*meilisearch.Stats, error)
 }
 
@@ -29,13 +31,19 @@ type Handler struct {
 	db      *gorm.DB
 	store   SearchStore
 	crawler CCFSCrawler
+	// the viewer-scoped ranking (viewer.go) scores entries with the same
+	// half-life as the activity tick and follows the same ack schemas
+	halfLife   time.Duration
+	ackSchemas []string
 }
 
-func New(db *gorm.DB, store SearchStore, crawler CCFSCrawler) *Handler {
+func New(db *gorm.DB, store SearchStore, crawler CCFSCrawler, halfLife time.Duration, ackSchemas []string) *Handler {
 	return &Handler{
-		db:      db,
-		store:   store,
-		crawler: crawler,
+		db:         db,
+		store:      store,
+		crawler:    crawler,
+		halfLife:   halfLife,
+		ackSchemas: ackSchemas,
 	}
 }
 
@@ -54,6 +62,9 @@ func (h *Handler) health(c echo.Context) error {
 }
 
 func (h *Handler) searchUsers(c echo.Context) error {
+	if viewer := c.QueryParam("viewer"); viewer != "" {
+		return h.followeeUsers(c, viewer)
+	}
 	filter := meili.BuildFilter(map[string]string{
 		"sourceServer": c.QueryParam("sourceServer"),
 		"owner":        c.QueryParam("owner"),
@@ -63,13 +74,20 @@ func (h *Handler) searchUsers(c echo.Context) error {
 	})
 	// sortable maps must stay in sync with the sortable attributes in meili.EnsureIndexes
 	return h.search(c, meili.UsersIndex, filter, map[string]bool{
-		"createdAt": true,
-		"indexedAt": true,
-		"username":  true,
+		"createdAt":     true,
+		"indexedAt":     true,
+		"username":      true,
+		"activityScore": true,
+		"postCount7d":   true,
+		"postCount30d":  true,
+		"lastPostAt":    true,
 	}, "createdAt:desc")
 }
 
 func (h *Handler) searchCommunities(c echo.Context) error {
+	if viewer := c.QueryParam("viewer"); viewer != "" {
+		return h.followeeCommunities(c, viewer)
+	}
 	// cckv fetches one community by key (with its activity fields)
 	filter := meili.BuildFilter(map[string]string{
 		"sourceServer": c.QueryParam("sourceServer"),

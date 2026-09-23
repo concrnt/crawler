@@ -33,5 +33,8 @@ func Migrate(db *gorm.DB) error {
 		&model.ReplicationCursor{},
 		&model.IndexedCommunity{},
 		&model.CommunityEntry{},
+		&model.IndexedUser{},
+		&model.UserEntry{},
+		&model.Ack{},
 	)
 }

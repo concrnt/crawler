@@ -92,3 +92,14 @@ func TestDeleteSpecForTarget(t *testing.T) {
 		}
 	}
 }
+
+func TestInFilter(t *testing.T) {
+	if got := InFilter("ccid", nil); got != "" {
+		t.Fatalf("empty list should yield an empty filter, got %q", got)
+	}
+	got := InFilter("ccid", []string{"con1", `con"2`})
+	want := `ccid IN ["con1", "con\"2"]`
+	if got != want {
+		t.Fatalf("filter mismatch:\n got: %s\nwant: %s", got, want)
+	}
+}

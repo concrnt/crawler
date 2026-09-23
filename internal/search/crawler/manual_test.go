@@ -13,6 +13,7 @@ import (
 	"github.com/concrnt/concrnt"
 	"github.com/concrnt/concrnt-crawler/internal/search/config"
 	"github.com/concrnt/concrnt-crawler/internal/search/meili"
+	"github.com/concrnt/concrnt-crawler/internal/search/model"
 	"github.com/concrnt/concrnt-crawler/internal/search/normalize"
 	"github.com/concrnt/concrnt/client"
 )
@@ -51,7 +52,7 @@ func TestCrawlCCFSIndexesProfile(t *testing.T) {
 		}
 	})
 
-	c := New(nil, store, cl, config.Default().Crawl, nil)
+	c := New(newTestDB(t), store, cl, config.Default().Crawl, nil)
 	result, err := c.CrawlCCFS(context.Background(), ccfs)
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +65,13 @@ func TestCrawlCCFSIndexesProfile(t *testing.T) {
 	}
 	if store.users[0].CCFS != ccfs {
 		t.Fatalf("ccfs mismatch: %s", store.users[0].CCFS)
+	}
+	var mirror []model.IndexedUser
+	if err := c.db.Find(&mirror).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(mirror) != 1 || mirror[0].CCKV != store.users[0].CCKV || mirror[0].CCID != store.users[0].CCID {
+		t.Fatalf("manual crawl should mirror the profile, got %+v", mirror)
 	}
 }
 
@@ -96,7 +104,7 @@ func TestCrawlCCFSIndexesPost(t *testing.T) {
 		}
 	})
 
-	c := New(nil, store, cl, config.Default().Crawl, nil)
+	c := New(newTestDB(t), store, cl, config.Default().Crawl, nil)
 	result, err := c.CrawlCCFS(context.Background(), ccfs)
 	if err != nil {
 		t.Fatal(err)
@@ -112,12 +120,13 @@ func TestCrawlCCFSIndexesPost(t *testing.T) {
 // manualStore records every store call in order so tests can assert that
 // deletes are applied after the upserts that precede them in the log.
 type manualStore struct {
-	users       []normalize.UserDocument
-	communities []normalize.CommunityDocument
-	posts       []normalize.PostDocument
-	deletes     []meili.DeleteSpec
-	activity    []meili.CommunityActivityDocument
-	calls       []string
+	users        []normalize.UserDocument
+	communities  []normalize.CommunityDocument
+	posts        []normalize.PostDocument
+	deletes      []meili.DeleteSpec
+	activity     []meili.CommunityActivityDocument
+	userActivity []meili.UserActivityDocument
+	calls        []string
 }
 
 func (s *manualStore) UpsertServers(context.Context, []meili.ServerDocument) error {
@@ -151,6 +160,12 @@ func (s *manualStore) DeleteRecords(_ context.Context, indexUID string, spec mei
 func (s *manualStore) UpdateCommunityActivity(_ context.Context, docs []meili.CommunityActivityDocument) error {
 	s.activity = append(s.activity, docs...)
 	s.calls = append(s.calls, "activity")
+	return nil
+}
+
+func (s *manualStore) UpdateUserActivity(_ context.Context, docs []meili.UserActivityDocument) error {
+	s.userActivity = append(s.userActivity, docs...)
+	s.calls = append(s.calls, "userActivity")
 	return nil
 }
 

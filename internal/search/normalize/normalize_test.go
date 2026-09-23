@@ -265,3 +265,25 @@ func signedDocumentOfKind(t *testing.T, kind string, key string, schema string, 
 	}
 	return concrnt.SignedDocument{Document: string(raw), Proof: concrnt.Proof{Type: concrnt.ProofTypeNone}}
 }
+
+// UpsertUsers merges into the index (meili.UpsertUsers), which only overwrites
+// the fields present in the payload: every record-derived field must be
+// emitted even when zero, or a cleared field would survive a re-commit
+func TestUserDocumentEmitsEveryField(t *testing.T) {
+	raw, err := json.Marshal(UserDocument{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"id", "type", "cckv", "ccid", "owner", "sourceServer", "schema", "username", "description", "avatar", "banner", "subprofiles", "badges", "ancestors", "createdAt", "indexedAt"} {
+		if _, ok := fields[key]; !ok {
+			t.Errorf("field %q missing from a zero UserDocument: %s", key, raw)
+		}
+	}
+	if _, ok := fields["ccfs"]; ok {
+		t.Errorf("ccfs is the one optional field: %s", raw)
+	}
+}

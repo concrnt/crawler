@@ -42,6 +42,7 @@ type Store interface {
 	UpsertPosts(ctx context.Context, docs []normalize.PostDocument) error
 	DeleteRecords(ctx context.Context, indexUID string, spec meili.DeleteSpec) error
 	UpdateCommunityActivity(ctx context.Context, docs []meili.CommunityActivityDocument) error
+	UpdateUserActivity(ctx context.Context, docs []meili.UserActivityDocument) error
 }
 
 type Crawler struct {
@@ -215,6 +216,9 @@ func (c *Crawler) CrawlCCFS(ctx context.Context, ccfs string) (ManualCrawlResult
 			return ManualCrawlResult{}, fmt.Errorf("profile schema did not match")
 		}
 		if err := c.store.UpsertUsers(ctx, []normalize.UserDocument{user}); err != nil {
+			return ManualCrawlResult{}, err
+		}
+		if err := c.mirrorUsers(ctx, []normalize.UserDocument{user}, time.Now().UTC()); err != nil {
 			return ManualCrawlResult{}, err
 		}
 		return ManualCrawlResult{
@@ -697,9 +701,15 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 	communities := map[string]normalize.CommunityDocument{}
 	posts := map[string]normalize.PostDocument{}
 	entries := map[string]model.CommunityEntry{}
+	userEntries := map[string]model.UserEntry{}
+	acks := map[model.Ack]model.Ack{}
 	flush := func() error {
 		if len(users) > 0 {
-			if err := c.store.UpsertUsers(ctx, slices.Collect(maps.Values(users))); err != nil {
+			docs := slices.Collect(maps.Values(users))
+			if err := c.store.UpsertUsers(ctx, docs); err != nil {
+				return err
+			}
+			if err := c.mirrorUsers(ctx, docs, indexedAt); err != nil {
 				return err
 			}
 			clear(users)
@@ -722,6 +732,18 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 				return err
 			}
 			clear(posts)
+		}
+		if len(userEntries) > 0 {
+			if err := c.recordUserEntries(ctx, slices.Collect(maps.Values(userEntries))); err != nil {
+				return err
+			}
+			clear(userEntries)
+		}
+		if len(acks) > 0 {
+			if err := c.upsertAcks(ctx, slices.Collect(maps.Values(acks))); err != nil {
+				return err
+			}
+			clear(acks)
 		}
 		if len(entries) > 0 {
 			// the mirror was updated above, so a community created earlier in
@@ -798,6 +820,9 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 				}
 				if ok {
 					posts[post.ID] = post
+					// the post record itself is the author's activity; the
+					// references a distribution leaves elsewhere are not
+					userEntries[doc.Key] = model.UserEntry{Author: doc.Author, EntryCCKV: doc.Key, CreatedAt: doc.CreatedAt}
 					replicationCommits.WithLabelValues(sourceServer, "post").Inc()
 				} else {
 					replicationCommits.WithLabelValues(sourceServer, "ignored").Inc()
@@ -826,14 +851,51 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 					return err
 				}
 			}
-			if err := c.deleteCommunityEntries(ctx, target); err != nil {
+			if err := c.deleteEntries(ctx, target); err != nil {
 				return err
 			}
+		case "ack", "unack", "acked", "unacked":
+			// one state per (acker, ackee, schema) triple (CIP-10 §4). The
+			// acker's server logs ack/unack and the ackee's server logs the
+			// derived acked/unacked with the same fields, so both feeds (and
+			// both documents on a shared server) land on the same row. Within
+			// a page the newest createdAt per triple is kept: Postgres rejects
+			// a batch upsert that touches one row twice.
+			ackee, ok := ackTarget(doc)
+			if !ok {
+				c.logger.Warn("skipping malformed ack", slog.String("server", sourceServer), slog.String("kind", doc.Kind))
+				replicationMalformed.WithLabelValues(sourceServer, "ack").Inc()
+				continue
+			}
+			if !slices.Contains(c.cfg.AckSchemas, doc.Schema) {
+				replicationCommits.WithLabelValues(sourceServer, "ignored").Inc()
+				continue
+			}
+			ack := model.Ack{Acker: doc.Author, Ackee: ackee, Schema: doc.Schema, CreatedAt: doc.CreatedAt, Valid: doc.Kind == "ack" || doc.Kind == "acked"}
+			triple := model.Ack{Acker: ack.Acker, Ackee: ack.Ackee, Schema: ack.Schema}
+			if held, seen := acks[triple]; !seen || held.CreatedAt.Before(ack.CreatedAt) {
+				acks[triple] = ack
+			}
+			replicationCommits.WithLabelValues(sourceServer, "ack").Inc()
 		default:
 			replicationCommits.WithLabelValues(sourceServer, "ignored").Inc()
 		}
 	}
 	return flush()
+}
+
+// ackTarget returns the ackee of an ack-kind document: the owner of its
+// associate, which must be a bare entity URI (cckv://<CCID>, no key, no
+// hint; CIP-10 §3) from a CCID author, with no key of its own.
+func ackTarget(doc concrnt.Document[json.RawMessage]) (string, bool) {
+	if doc.Key != "" || doc.Associate == nil || !concrnt.IsCCID(doc.Author) {
+		return "", false
+	}
+	target, err := concrnt.ParseCCURI(*doc.Associate)
+	if err != nil || target.Scheme != "cckv" || target.Key != "" || !concrnt.IsCCID(target.Owner) {
+		return "", false
+	}
+	return target.Owner, true
 }
 
 func (c *Crawler) markCursorFailure(ctx context.Context, serverDomain string, err error) {

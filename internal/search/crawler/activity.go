@@ -15,10 +15,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// activityWindow bounds the entries that feed the score and postCount30d;
+// ActivityWindow bounds the entries that feed the score and postCount30d;
 // postCount7d and activeAuthors7d use the shorter window.
 const (
-	activityWindow      = 30 * 24 * time.Hour
+	ActivityWindow      = 30 * 24 * time.Hour
 	activityShortWindow = 7 * 24 * time.Hour
 )
 
@@ -47,6 +47,33 @@ func (c *Crawler) mirrorCommunities(ctx context.Context, keys []string, indexedA
 		rows = append(rows, model.IndexedCommunity{CCKV: key, IndexedAt: indexedAt})
 	}
 	return c.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
+}
+
+func (c *Crawler) mirrorUsers(ctx context.Context, docs []normalize.UserDocument, indexedAt time.Time) error {
+	rows := make([]model.IndexedUser, 0, len(docs))
+	for _, doc := range docs {
+		rows = append(rows, model.IndexedUser{CCKV: doc.CCKV, CCID: doc.CCID, IndexedAt: indexedAt})
+	}
+	return c.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
+}
+
+// recordUserEntries inserts post records as their author's activity. A
+// re-commit of a post keeps its key, and an edit is not activity, so an
+// existing row is left alone (same rule as recordCommunityEntries).
+func (c *Crawler) recordUserEntries(ctx context.Context, entries []model.UserEntry) error {
+	return c.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&entries).Error
+}
+
+// upsertAcks applies ack transitions with the server's own rule (CIP-10 §4):
+// a row changes only when the incoming createdAt is strictly newer, so a
+// replayed or duplicated (ack on one side, acked on the other) document is a
+// no-op and the stored state cannot roll back.
+func (c *Crawler) upsertAcks(ctx context.Context, acks []model.Ack) error {
+	return c.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "acker"}, {Name: "ackee"}, {Name: "schema"}},
+		DoUpdates: clause.AssignmentColumns([]string{"created_at", "valid"}),
+		Where:     clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "acks.created_at < excluded.created_at"}}},
+	}).Create(&acks).Error
 }
 
 // recordCommunityEntries keeps the entries whose parent is an indexed
@@ -85,15 +112,17 @@ func (c *Crawler) recordCommunityEntries(ctx context.Context, entries []model.Co
 	}).Create(&rows).Error
 }
 
-// deleteCommunityEntries applies a delete commit target (CIP-4) to the mirror
-// and the entries, with the same three shapes as meili.DeleteSpecForTarget:
-// "key/*" is the subtree, "key*" the key and its subtree, anything else the
-// single key. Entries sit under their community, so a subtree match on the
+// deleteEntries applies a delete commit target (CIP-4) to the mirrors and the
+// entries, with the same three shapes as meili.DeleteSpecForTarget: "key/*"
+// is the subtree, "key*" the key and its subtree, anything else the single
+// key. Community entries sit under their community, so a subtree match on the
 // entry key also covers every entry of a deleted community. The target is
 // matched against href as well: the sweep of a deleted post's references is
 // server-internal (CIP-4 §6.1) and never surfaces as a delete of the reference
-// keys themselves.
-func (c *Crawler) deleteCommunityEntries(ctx context.Context, target string) error {
+// keys themselves. User entries are the post keys, so a post delete (or a
+// range delete over the author's posts) removes them directly. Acks have no
+// key and are never the target of a delete; an unack is their only removal.
+func (c *Crawler) deleteEntries(ctx context.Context, target string) error {
 	var exact, base string
 	switch {
 	case strings.HasSuffix(target, "/*"):
@@ -114,6 +143,12 @@ func (c *Crawler) deleteCommunityEntries(ctx context.Context, target string) err
 			if err := tx.Where("entry_cckv = ? OR community_cckv = ? OR href = ?", exact, exact, exact).Delete(&model.CommunityEntry{}).Error; err != nil {
 				return err
 			}
+			if err := tx.Where("cckv = ?", exact).Delete(&model.IndexedUser{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("entry_cckv = ?", exact).Delete(&model.UserEntry{}).Error; err != nil {
+				return err
+			}
 		}
 		if base != "" {
 			prefix := base + "/"
@@ -121,6 +156,12 @@ func (c *Crawler) deleteCommunityEntries(ctx context.Context, target string) err
 				return err
 			}
 			if err := tx.Where("substr(entry_cckv, 1, ?) = ? OR substr(href, 1, ?) = ?", len(prefix), prefix, len(prefix), prefix).Delete(&model.CommunityEntry{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("substr(cckv, 1, ?) = ?", len(prefix), prefix).Delete(&model.IndexedUser{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("substr(entry_cckv, 1, ?) = ?", len(prefix), prefix).Delete(&model.UserEntry{}).Error; err != nil {
 				return err
 			}
 		}
@@ -142,16 +183,26 @@ func (c *Crawler) activityLoop(ctx context.Context) {
 	}
 }
 
+// runActivityRefresh recomputes both subjects; a failure of one does not
+// skip the other.
 func (c *Crawler) runActivityRefresh(ctx context.Context) {
-	started := time.Now()
-	err := c.RefreshCommunityActivity(ctx, started.UTC())
-	activityRefreshDuration.Observe(time.Since(started).Seconds())
-	if err != nil {
-		c.logger.Warn("community activity refresh failed", slog.String("error", err.Error()), slog.String("elapsed", time.Since(started).Round(time.Millisecond).String()))
-		activityRefreshes.WithLabelValues(resultError).Inc()
-		return
+	for _, subject := range []struct {
+		name    string
+		refresh func(context.Context, time.Time) error
+	}{
+		{subjectCommunity, c.RefreshCommunityActivity},
+		{subjectUser, c.RefreshUserActivity},
+	} {
+		started := time.Now()
+		err := subject.refresh(ctx, started.UTC())
+		activityRefreshDuration.WithLabelValues(subject.name).Observe(time.Since(started).Seconds())
+		if err != nil {
+			c.logger.Warn("activity refresh failed", slog.String("subject", subject.name), slog.String("error", err.Error()), slog.String("elapsed", time.Since(started).Round(time.Millisecond).String()))
+			activityRefreshes.WithLabelValues(subject.name, resultError).Inc()
+			continue
+		}
+		activityRefreshes.WithLabelValues(subject.name, resultOK).Inc()
 	}
-	activityRefreshes.WithLabelValues(resultOK).Inc()
 }
 
 // RefreshCommunityActivity recomputes the activity of every indexed community
@@ -178,7 +229,7 @@ func (c *Crawler) RefreshCommunityActivity(ctx context.Context, now time.Time) e
 	historyDays := c.cfg.ActivityHistoryDays
 	historyStart := now.UTC().Truncate(24*time.Hour).AddDate(0, 0, -(historyDays - 1))
 	// the fetch covers whichever of the score window and the history is longer
-	since := now.Add(-activityWindow)
+	since := now.Add(-ActivityWindow)
 	if historyStart.Before(since) {
 		since = historyStart
 	}
@@ -219,7 +270,7 @@ func (c *Crawler) RefreshCommunityActivity(ctx context.Context, now time.Time) e
 		// a future-dated entry counts as brand new rather than inflating
 		// beyond a weight of 1
 		age := max(now.Sub(entry.CreatedAt), 0)
-		if age <= activityWindow {
+		if age <= ActivityWindow {
 			doc.ActivityScore += math.Exp2(-age.Seconds() / halfLife)
 			doc.PostCount30d++
 		}
@@ -266,6 +317,95 @@ func (c *Crawler) RefreshCommunityActivity(ctx context.Context, now time.Time) e
 		return fmt.Errorf("update community activity: %w", err)
 	}
 	c.logger.Info("community activity refreshed", slog.Int("communities", len(out)), slog.Int("entries", len(entries)), slog.Int("historyDays", historyDays), slog.String("elapsed", time.Since(now).Round(time.Millisecond).String()))
+	return nil
+}
+
+// RefreshUserActivity is RefreshCommunityActivity for users: the activity of
+// every CCID in the users mirror is recomputed from its post records and
+// merged into each profile document (main and subprofiles) of that CCID. A
+// user has one author, so the history carries posts only.
+func (c *Crawler) RefreshUserActivity(ctx context.Context, now time.Time) error {
+	var mirror []model.IndexedUser
+	if err := c.db.WithContext(ctx).Order("cckv asc").Find(&mirror).Error; err != nil {
+		return err
+	}
+	if len(mirror) == 0 {
+		return nil
+	}
+
+	type recent struct {
+		Author    string
+		CreatedAt time.Time
+	}
+	historyDays := c.cfg.ActivityHistoryDays
+	historyStart := now.UTC().Truncate(24*time.Hour).AddDate(0, 0, -(historyDays - 1))
+	since := now.Add(-ActivityWindow)
+	if historyStart.Before(since) {
+		since = historyStart
+	}
+	var entries []recent
+	if err := c.db.WithContext(ctx).Model(&model.UserEntry{}).
+		Select("author", "created_at").
+		Where("created_at > ?", since).
+		Find(&entries).Error; err != nil {
+		return err
+	}
+	var latests []model.UserEntry
+	if err := c.db.WithContext(ctx).Model(&model.UserEntry{}).
+		Select("author", "created_at").
+		Where("created_at = (SELECT MAX(created_at) FROM user_entries AS newest WHERE newest.author = user_entries.author)").
+		Find(&latests).Error; err != nil {
+		return err
+	}
+
+	halfLife := c.cfg.ActivityHalfLife.Duration().Seconds()
+	// one activity per CCID, pushed to every profile document of that CCID
+	activities := map[string]*meili.UserActivityDocument{}
+	for _, row := range mirror {
+		if _, ok := activities[row.CCID]; ok {
+			continue
+		}
+		history := make([]meili.UserActivityDay, historyDays)
+		for i := range history {
+			history[i].Date = historyStart.AddDate(0, 0, i).Format(time.DateOnly)
+		}
+		activities[row.CCID] = &meili.UserActivityDocument{ActivityHistory: history}
+	}
+	for _, entry := range entries {
+		doc, ok := activities[entry.Author]
+		if !ok {
+			continue
+		}
+		age := max(now.Sub(entry.CreatedAt), 0)
+		if age <= ActivityWindow {
+			doc.ActivityScore += math.Exp2(-age.Seconds() / halfLife)
+			doc.PostCount30d++
+		}
+		if age <= activityShortWindow {
+			doc.PostCount7d++
+		}
+		day := min(int(entry.CreatedAt.UTC().Truncate(24*time.Hour).Sub(historyStart)/(24*time.Hour)), historyDays-1)
+		if day >= 0 {
+			doc.ActivityHistory[day].Posts++
+		}
+	}
+	for _, row := range latests {
+		if doc, ok := activities[row.Author]; ok {
+			at := row.CreatedAt.UTC()
+			doc.LastPostAt = &at
+		}
+	}
+
+	out := make([]meili.UserActivityDocument, 0, len(mirror))
+	for _, row := range mirror {
+		doc := *activities[row.CCID]
+		doc.ID = normalize.EncodeMeiliID(row.CCKV)
+		out = append(out, doc)
+	}
+	if err := c.store.UpdateUserActivity(ctx, out); err != nil {
+		return fmt.Errorf("update user activity: %w", err)
+	}
+	c.logger.Info("user activity refreshed", slog.Int("users", len(activities)), slog.Int("documents", len(out)), slog.Int("entries", len(entries)), slog.Int("historyDays", historyDays), slog.String("elapsed", time.Since(now).Round(time.Millisecond).String()))
 	return nil
 }
 

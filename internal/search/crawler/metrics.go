@@ -15,6 +15,9 @@ const (
 	resultOK        = "ok"
 	resultTransient = "transient"
 	resultError     = "error"
+
+	subjectCommunity = "community"
+	subjectUser      = "user"
 )
 
 var (
@@ -36,14 +39,14 @@ var (
 		Namespace: "crawler",
 		Subsystem: "replication",
 		Name:      "commits_total",
-		Help:      "Commits processed from replication pages by server and kind (user, community, post, entry, delete; ignored: not an indexed schema or kind). A record keyed directly under a domain-owned parent counts as entry as well as its own kind.",
+		Help:      "Commits processed from replication pages by server and kind (user, community, post, entry, delete, ack; ignored: not an indexed schema or kind). A record keyed directly under a domain-owned parent counts as entry as well as its own kind; ack covers the four ack kinds of an indexed ack schema.",
 	}, []string{"server", "kind"})
 
 	replicationMalformed = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "crawler",
 		Subsystem: "replication",
 		Name:      "malformed_total",
-		Help:      "Commits skipped because they could not be decoded, by server and kind (commit, profile, community, post, delete).",
+		Help:      "Commits skipped because they could not be decoded, by server and kind (commit, profile, community, post, delete, ack).",
 	}, []string{"server", "kind"})
 
 	crawlRuns = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -90,16 +93,16 @@ var (
 		Namespace: "crawler",
 		Subsystem: "activity",
 		Name:      "refreshes_total",
-		Help:      "Community activity refreshes by result (ok, error).",
-	}, []string{"result"})
+		Help:      "Activity refreshes by subject (community, user) and result (ok, error).",
+	}, []string{"subject", "result"})
 
-	activityRefreshDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+	activityRefreshDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "crawler",
 		Subsystem: "activity",
 		Name:      "refresh_duration_seconds",
-		Help:      "Wall time of one community activity refresh, including the Meilisearch merge.",
+		Help:      "Wall time of one activity refresh by subject (community, user), including the Meilisearch merge.",
 		Buckets:   []float64{0.1, 0.5, 1, 5, 15, 30, 60, 120, 300, 600},
-	})
+	}, []string{"subject"})
 )
 
 // progressCollector exports the replication position of every server in the

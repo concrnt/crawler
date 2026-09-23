@@ -76,6 +76,26 @@ type CommunityActivityDocument struct {
 	ActivityHistory []ActivityDay `json:"activityHistory"`
 }
 
+// UserActivityDay is one UTC day of a user's activity history: only the
+// posts, since a user is a single author.
+type UserActivityDay struct {
+	Date  string `json:"date"` // YYYY-MM-DD
+	Posts int    `json:"posts"`
+}
+
+// UserActivityDocument is the precomputed activity of one user (aggregated
+// per CCID from the user's own post records), merged into every profile
+// document of that CCID in the users index. Same shape and conventions as
+// CommunityActivityDocument, minus activeAuthors7d.
+type UserActivityDocument struct {
+	ID              string            `json:"id"`
+	ActivityScore   float64           `json:"activityScore"`
+	PostCount7d     int               `json:"postCount7d"`
+	PostCount30d    int               `json:"postCount30d"`
+	LastPostAt      *time.Time        `json:"lastPostAt,omitempty"`
+	ActivityHistory []UserActivityDay `json:"activityHistory"`
+}
+
 type Store struct {
 	client      meilisearch.ServiceManager
 	taskTimeout time.Duration
@@ -123,7 +143,7 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 			uid:        UsersIndex,
 			searchable: []string{"username", "description", "ccid", "owner", "cckv", "sourceServer"},
 			filterable: []string{"ccid", "owner", "sourceServer", "schema", "ancestors"},
-			sortable:   []string{"createdAt", "indexedAt", "username"},
+			sortable:   []string{"createdAt", "indexedAt", "username", "activityScore", "postCount7d", "postCount30d", "lastPostAt"},
 		},
 		{
 			uid:        PostsIndex,
@@ -178,8 +198,12 @@ func (s *Store) UpsertServers(ctx context.Context, docs []ServerDocument) error 
 	return s.waitTask(ctx, task, err)
 }
 
-// UpsertUsers keeps the earliest createdAt the index has seen for a key (see
-// existingCreatedAt), so an edited profile does not surface as new.
+// UpsertUsers merges (PUT) rather than replaces so the activity fields
+// written by UpdateUserActivity survive a re-commit of the profile record.
+// UserDocument emits every field, so the merge is a full overwrite of the
+// record-derived part, except createdAt, which keeps the earliest value the
+// index has seen for the key (see existingCreatedAt), so an edited profile
+// does not surface as new.
 func (s *Store) UpsertUsers(ctx context.Context, docs []normalize.UserDocument) error {
 	if len(docs) == 0 {
 		return nil
@@ -197,7 +221,7 @@ func (s *Store) UpsertUsers(ctx context.Context, docs []normalize.UserDocument) 
 		docs[i].CreatedAt = earliestCreatedAt(existing, docs[i].ID, docs[i].CreatedAt)
 	}
 	index := s.client.Index(UsersIndex)
-	task, err := index.AddDocumentsWithContext(ctx, docs, "id")
+	task, err := index.UpdateDocumentsWithContext(ctx, docs, "id")
 	return s.waitTask(ctx, task, err)
 }
 
@@ -277,6 +301,20 @@ func earliestCreatedAt(existing map[string]time.Time, id string, incoming time.T
 	return incoming
 }
 
+// UpdateUserActivity merges activity fields into existing user documents.
+// Callers pass only documents that are in the index (see the users mirror):
+// a merge into an unknown id would create a document holding nothing but
+// activity.
+func (s *Store) UpdateUserActivity(ctx context.Context, docs []UserActivityDocument) error {
+	if len(docs) == 0 {
+		return nil
+	}
+	defer prometheus.NewTimer(meiliWriteDuration.WithLabelValues("activity")).ObserveDuration()
+	index := s.client.Index(UsersIndex)
+	task, err := index.UpdateDocumentsWithContext(ctx, docs, "id")
+	return s.waitTask(ctx, task, err)
+}
+
 func (s *Store) UpsertPosts(ctx context.Context, docs []normalize.PostDocument) error {
 	if len(docs) == 0 {
 		return nil
@@ -319,6 +357,17 @@ func (s *Store) Search(ctx context.Context, indexUID string, query string, limit
 		req.Sort = sort
 	}
 	return s.client.Index(indexUID).SearchWithContext(ctx, query, req)
+}
+
+// FetchDocuments returns the documents of an index matching a filter, without
+// ranking or a query, up to limit. Used to load a page of documents by key
+// (see InFilter) once their order was decided elsewhere.
+func (s *Store) FetchDocuments(ctx context.Context, indexUID string, filter string, limit int64) ([]map[string]any, error) {
+	var result meilisearch.DocumentsResult
+	if err := s.client.Index(indexUID).GetDocumentsWithContext(ctx, &meilisearch.DocumentsQuery{Filter: filter, Limit: limit}, &result); err != nil {
+		return nil, err
+	}
+	return result.Results, nil
 }
 
 func (s *Store) Stats(ctx context.Context) (*meilisearch.Stats, error) {
@@ -391,6 +440,20 @@ func BuildFilter(params map[string]string, allowed map[string]bool) string {
 		parts = append(parts, fmt.Sprintf("%s = \"%s\"", key, escapeFilterValue(value)))
 	}
 	return strings.Join(parts, " AND ")
+}
+
+// InFilter builds a `field IN ["a", "b"]` filter over a filterable attribute.
+// An empty list yields an empty filter (which would match everything), so
+// callers must handle that case before searching.
+func InFilter(field string, values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	quoted := make([]string, len(values))
+	for i, value := range values {
+		quoted[i] = "\"" + escapeFilterValue(value) + "\""
+	}
+	return field + " IN [" + strings.Join(quoted, ", ") + "]"
 }
 
 // BuildSort validates a "field:asc|desc" expression ("field" alone means desc)

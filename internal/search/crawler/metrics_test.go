@@ -18,7 +18,8 @@ func TestMetricsPassLint(t *testing.T) {
 	crawlRuns.WithLabelValues(resultOK)
 	serverCrawls.WithLabelValues(lintServer, resultOK)
 	discoveryRuns.WithLabelValues(resultOK)
-	activityRefreshes.WithLabelValues(resultOK)
+	activityRefreshes.WithLabelValues(subjectCommunity, resultOK)
+	activityRefreshDuration.WithLabelValues(subjectCommunity)
 
 	problems, err := testutil.GatherAndLint(prometheus.DefaultGatherer,
 		"crawler_replication_requests_total",

@@ -83,3 +83,39 @@ type CommunityEntry struct {
 	Href          string    `gorm:"type:text;index"`
 	CreatedAt     time.Time `gorm:"index"`
 }
+
+// IndexedUser mirrors the profile keys held in the users index, with the
+// CCID each one belongs to: a user's activity is aggregated per CCID and
+// merged into every profile document (main and subprofiles) of that CCID.
+type IndexedUser struct {
+	CCKV      string `gorm:"primaryKey;type:text"`
+	CCID      string `gorm:"column:ccid;type:text;index"`
+	IndexedAt time.Time
+}
+
+// UserEntry is one post record (a schema in postSchemas) committed by
+// Author, keyed by the record itself rather than the references a
+// distribution leaves elsewhere, so a post counts once however many timelines
+// it went to. Rows are not checked against the users mirror on insert: the
+// profile may be indexed later or from another server, so the join happens
+// when the activity is read.
+type UserEntry struct {
+	Author    string    `gorm:"type:text;index:idx_user_entries_author_created,priority:1"`
+	EntryCCKV string    `gorm:"primaryKey;type:text"`
+	CreatedAt time.Time `gorm:"index:idx_user_entries_author_created,priority:2"`
+}
+
+// Ack is the state of one (acker, ackee, schema) triple (CIP-10 §4), fed by
+// the ack/unack commits on the acker's server and the acked/unacked commits
+// on the ackee's server, which carry the same fields. CreatedAt is the
+// document's own: a transition applies only when it is strictly newer than
+// the stored one, so the two sides and any replay converge on the same state.
+// An unack keeps the row with Valid false. The column names avoid from/to,
+// which are reserved words.
+type Ack struct {
+	Acker     string `gorm:"primaryKey;column:acker;type:text"`
+	Ackee     string `gorm:"primaryKey;column:ackee;type:text"`
+	Schema    string `gorm:"primaryKey;type:text"`
+	CreatedAt time.Time
+	Valid     bool
+}

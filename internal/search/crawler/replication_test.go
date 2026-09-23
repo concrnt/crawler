@@ -70,7 +70,7 @@ func (s *replicationServer) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 }
 
-func newReplicationCrawler(t *testing.T, server *replicationServer, store Store, cfg config.Crawl) *Crawler {
+func newTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{TranslateError: true, Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
@@ -85,9 +85,14 @@ func newReplicationCrawler(t *testing.T, server *replicationServer, store Store,
 	if err := database.Migrate(db); err != nil {
 		t.Fatal(err)
 	}
+	return db
+}
+
+func newReplicationCrawler(t *testing.T, server *replicationServer, store Store, cfg config.Crawl) *Crawler {
+	t.Helper()
 	cl := client.New(replicationDomain)
 	cl.GetClient().Transport = server
-	return New(db, store, cl, cfg, nil)
+	return New(newTestDB(t), store, cl, cfg, nil)
 }
 
 func stamp(ts time.Time) string {

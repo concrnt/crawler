@@ -78,7 +78,7 @@ func Run(ctx context.Context, cfg searchconfig.Config, version string) error {
 			`"error":"${error}","latency":${latency},"bytes_in":${bytes_in},"bytes_out":${bytes_out}}` + "\n",
 	}))
 
-	api.New(db, searchStore, searchCrawler).RegisterRoutes(e)
+	api.New(db, searchStore, searchCrawler, cfg.Crawl.ActivityHalfLife.Duration(), cfg.Crawl.AckSchemas).RegisterRoutes(e)
 
 	prometheus.MustRegister(crawler.NewProgressCollector(db, cfg.Crawl.Layer))
 	prometheus.MustRegister(meili.NewStatsCollector(searchStore))
