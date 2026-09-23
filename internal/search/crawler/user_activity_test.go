@@ -43,7 +43,7 @@ func TestApplyPageRecordsUserEntriesAndMirror(t *testing.T) {
 	subPosts := subProfile + "/posts"
 	apply := func(items ...concrnt.SignedDocument) {
 		t.Helper()
-		if err := c.applyPage(ctx, replicationDomain, items); err != nil {
+		if _, err := c.applyPage(ctx, replicationDomain, items); err != nil {
 			t.Fatal(err)
 		}
 	}

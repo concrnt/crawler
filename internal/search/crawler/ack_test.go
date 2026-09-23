@@ -48,7 +48,7 @@ func TestApplyPageIngestsAcks(t *testing.T) {
 	follow := config.DefaultAckSchema
 	apply := func(items ...concrnt.SignedDocument) {
 		t.Helper()
-		if err := c.applyPage(ctx, replicationDomain, items); err != nil {
+		if _, err := c.applyPage(ctx, replicationDomain, items); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -131,7 +131,7 @@ func TestApplyPageRejectsMalformedAcks(t *testing.T) {
 	noAssociate := commit(t, "ack", "", follow, map[string]string{}, "")
 
 	resetCounters()
-	if err := c.applyPage(context.Background(), replicationDomain, []concrnt.SignedDocument{
+	if _, err := c.applyPage(context.Background(), replicationDomain, []concrnt.SignedDocument{
 		keyed,
 		noAssociate,
 		commitAck(t, "ack", testAuthor, otherAuthor+"/concrnt.world/profiles/main", follow, t0), // associate with a key

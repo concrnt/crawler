@@ -147,6 +147,7 @@ observability:
 | metric | 内容 |
 | --- | --- |
 | `crawler_replication_cursor_timestamp_seconds{server}` | replication cursor の位置 (server 側の受理時刻)。遅延は `time() - この値` |
+| `crawler_replication_latest_post_timestamp_seconds{server}` | その server の log から索引した投稿の最新 `createdAt` (単調増加: backdate された commit で戻らない)。cursor が「log をどこまで読んだか」なのに対し、こちらは「索引済みの投稿がどれだけ新しいか」。遅延は `time() - この値` |
 | `crawler_replication_caught_up{server}` | 直近の run で feed を読み切っていれば 1、追いつき中なら 0 |
 | `crawler_replication_caught_up_timestamp_seconds{server}` / `crawler_replication_last_finished_timestamp_seconds{server}` | 最後に読み切った時刻 / 最後にページを適用した時刻 |
 | `crawler_replication_backoff{server}` | 失敗の backoff でスキップ中なら 1 |

@@ -26,9 +26,9 @@ func TestProgressCollectorExportsPerServerReplicationState(t *testing.T) {
 	}
 	cursors := []model.ReplicationCursor{
 		// drained: caught_up_at and last_finished_at were stamped together
-		{ServerDomain: "caught.test", CursorAt: &t0, CaughtUpAt: &t1, LastFinishedAt: &t1},
+		{ServerDomain: "caught.test", CursorAt: &t0, LatestPostAt: &t0, CaughtUpAt: &t1, LastFinishedAt: &t1},
 		// hit maxPagesPerRun since the last drain
-		{ServerDomain: "capped.test", CursorAt: &t1, CaughtUpAt: &t0, LastFinishedAt: &t1},
+		{ServerDomain: "capped.test", CursorAt: &t1, LatestPostAt: &t1, CaughtUpAt: &t0, LastFinishedAt: &t1},
 		// two failures a minute ago: inside the backoff ladder
 		{ServerDomain: "failing.test", FailCount: 2, LastErrorAt: &recentError},
 		{ServerDomain: "disabled.test", CursorAt: &t0, CaughtUpAt: &t0, LastFinishedAt: &t0},
@@ -80,6 +80,10 @@ crawler_replication_consecutive_failures{server="failing.test"} 2
 crawler_replication_last_finished_timestamp_seconds{server="capped.test"} %[2]d
 crawler_replication_last_finished_timestamp_seconds{server="caught.test"} %[2]d
 crawler_replication_last_finished_timestamp_seconds{server="disabled.test"} %[1]d
+# HELP crawler_replication_latest_post_timestamp_seconds createdAt of the newest post applied from this server's log as unix seconds, never moved back by a backdated commit; time() minus this is how stale the indexed posts are, where the cursor gauge is how far the log has been read.
+# TYPE crawler_replication_latest_post_timestamp_seconds gauge
+crawler_replication_latest_post_timestamp_seconds{server="capped.test"} %[2]d
+crawler_replication_latest_post_timestamp_seconds{server="caught.test"} %[1]d
 # HELP crawler_server_disabled 1 when the server is excluded from crawling.
 # TYPE crawler_server_disabled gauge
 crawler_server_disabled{server="capped.test"} 0

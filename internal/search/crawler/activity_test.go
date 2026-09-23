@@ -81,7 +81,7 @@ func TestApplyPageRecordsEntriesUnderIndexedCommunities(t *testing.T) {
 		commit(t, "record", general+"/direct", config.DefaultPostSchemas[0], map[string]string{"body": "hi"}, ""),
 	}
 	resetCounters()
-	if err := c.applyPage(ctx, replicationDomain, page); err != nil {
+	if _, err := c.applyPage(ctx, replicationDomain, page); err != nil {
 		t.Fatal(err)
 	}
 
@@ -106,7 +106,7 @@ func TestApplyPageRecordsEntriesUnderIndexedCommunities(t *testing.T) {
 	}
 
 	// a reference arriving in a later page finds the community in the mirror
-	if err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{ref(general + "/ref2")}); err != nil {
+	if _, err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{ref(general + "/ref2")}); err != nil {
 		t.Fatal(err)
 	}
 	if entries := loadEntries(t, c); len(entries) != 3 {
@@ -127,7 +127,7 @@ func TestApplyPageRecordsEntriesUnderIndexedCommunities(t *testing.T) {
 		t.Fatal(err)
 	}
 	recommit.Document = string(raw)
-	if err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{recommit}); err != nil {
+	if _, err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{recommit}); err != nil {
 		t.Fatal(err)
 	}
 	if entries := loadEntries(t, c); len(entries) != 3 || entries[1].EntryCCKV != general+"/ref1" || !entries[1].CreatedAt.Equal(t0) || entries[1].Author != otherAuthor {
@@ -136,31 +136,31 @@ func TestApplyPageRecordsEntriesUnderIndexedCommunities(t *testing.T) {
 
 	// deleting the referenced post sweeps its reference (matched by href);
 	// deleting a reference key directly works too
-	if err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{commit(t, "delete", "", "", postsParent+"/ref1", "")}); err != nil {
+	if _, err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{commit(t, "delete", "", "", postsParent+"/ref1", "")}); err != nil {
 		t.Fatal(err)
 	}
 	if entries := loadEntries(t, c); len(entries) != 2 || entries[0].EntryCCKV != general+"/direct" || entries[1].EntryCCKV != general+"/ref2" {
 		t.Fatalf("post delete should sweep its reference, got %+v", entries)
 	}
-	if err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{ref(general + "/ref5"), commit(t, "delete", "", "", general+"/ref5", "")}); err != nil {
+	if _, err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{ref(general + "/ref5"), commit(t, "delete", "", "", general+"/ref5", "")}); err != nil {
 		t.Fatal(err)
 	}
 	if entries := loadEntries(t, c); len(entries) != 2 {
 		t.Fatalf("exact delete of a reference key should remove it, got %+v", entries)
 	}
 	// a range delete over the author's posts sweeps by href as well
-	if err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{commit(t, "delete", "", "", postsParent+"/*", "")}); err != nil {
+	if _, err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{commit(t, "delete", "", "", postsParent+"/*", "")}); err != nil {
 		t.Fatal(err)
 	}
 	if entries := loadEntries(t, c); len(entries) != 1 || entries[0].EntryCCKV != general+"/direct" {
 		t.Fatalf("range delete over posts should sweep their references only, got %+v", entries)
 	}
-	if err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{ref(general + "/ref2")}); err != nil {
+	if _, err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{ref(general + "/ref2")}); err != nil {
 		t.Fatal(err)
 	}
 
 	// subtree delete keeps the community itself but empties it
-	if err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{commit(t, "delete", "", "", general+"/*", "")}); err != nil {
+	if _, err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{commit(t, "delete", "", "", general+"/*", "")}); err != nil {
 		t.Fatal(err)
 	}
 	if entries := loadEntries(t, c); len(entries) != 0 {
@@ -171,7 +171,7 @@ func TestApplyPageRecordsEntriesUnderIndexedCommunities(t *testing.T) {
 	}
 
 	// key-and-subtree delete drops the community; later references are ignored
-	if err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{
+	if _, err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{
 		ref(general + "/ref3"),
 		commit(t, "delete", "", "", general+"*", ""),
 		ref(general + "/ref4"),

@@ -865,6 +865,29 @@
                       }
                     }
                   }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "refId": "F",
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${Prometheus}"
+                      },
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "time() - crawler_replication_latest_post_timestamp_seconds",
+                        "legendFormat": "",
+                        "instant": true,
+                        "range": false,
+                        "format": "table"
+                      }
+                    }
+                  }
                 }
               ],
               "transformations": [
@@ -888,22 +911,25 @@
                         "Time 2": true,
                         "Time 3": true,
                         "Time 4": true,
-                        "Time 5": true
+                        "Time 5": true,
+                        "Time 6": true
                       },
                       "indexByName": {
                         "server": 0,
                         "Value #A": 1,
-                        "Value #B": 2,
-                        "Value #C": 3,
-                        "Value #D": 4,
-                        "Value #E": 5
+                        "Value #F": 2,
+                        "Value #B": 3,
+                        "Value #C": 4,
+                        "Value #D": 5,
+                        "Value #E": 6
                       },
                       "renameByName": {
                         "Value #A": "lag",
                         "Value #B": "caught up",
                         "Value #C": "failures",
                         "Value #D": "last crawl ago",
-                        "Value #E": "backoff"
+                        "Value #E": "backoff",
+                        "Value #F": "post lag"
                       }
                     }
                   }
@@ -976,6 +1002,18 @@
                     "matcher": {
                       "id": "byName",
                       "options": "lag"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "s"
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "post lag"
                     },
                     "properties": [
                       {
@@ -3549,6 +3587,117 @@
             }
           }
         }
+      },
+      "panel-32": {
+        "kind": "Panel",
+        "spec": {
+          "id": 32,
+          "title": "Post lag by server",
+          "description": "now minus the createdAt of the newest post indexed from the server (monotonic, so a backdated import does not move it); with cursor lag it separates \"the log is behind\" from \"there is nothing new\"",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "refId": "A",
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${Prometheus}"
+                      },
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "time() - crawler_replication_latest_post_timestamp_seconds{server=~\"$server\"}",
+                        "legendFormat": "{{server}}",
+                        "instant": false,
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "",
+            "spec": {
+              "options": {
+                "legend": {
+                  "calcs": [],
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": true
+                },
+                "tooltip": {
+                  "hideZeros": false,
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "custom": {
+                    "axisBorderShow": false,
+                    "axisCenteredZero": false,
+                    "axisColorMode": "text",
+                    "axisLabel": "",
+                    "axisPlacement": "auto",
+                    "barAlignment": 0,
+                    "drawStyle": "line",
+                    "fillOpacity": 0,
+                    "gradientMode": "none",
+                    "hideFrom": {
+                      "legend": false,
+                      "tooltip": false,
+                      "viz": false
+                    },
+                    "insertNulls": false,
+                    "lineInterpolation": "linear",
+                    "lineWidth": 1,
+                    "pointSize": 5,
+                    "scaleDistribution": {
+                      "type": "log",
+                      "log": 10
+                    },
+                    "showPoints": "auto",
+                    "spanNulls": false,
+                    "stacking": {
+                      "group": "A",
+                      "mode": "none"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  },
+                  "unit": "s"
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
       }
     },
     "layout": {
@@ -3691,7 +3840,7 @@
                         "height": 9,
                         "element": {
                           "kind": "ElementReference",
-                          "name": "panel-9"
+                          "name": "panel-32"
                         }
                       }
                     },
@@ -3700,6 +3849,19 @@
                       "spec": {
                         "x": 0,
                         "y": 9,
+                        "width": 24,
+                        "height": 9,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "panel-9"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 0,
+                        "y": 18,
                         "width": 12,
                         "height": 8,
                         "element": {
@@ -3712,7 +3874,7 @@
                       "kind": "GridLayoutItem",
                       "spec": {
                         "x": 12,
-                        "y": 9,
+                        "y": 18,
                         "width": 12,
                         "height": 8,
                         "element": {
@@ -3725,7 +3887,7 @@
                       "kind": "GridLayoutItem",
                       "spec": {
                         "x": 0,
-                        "y": 17,
+                        "y": 26,
                         "width": 12,
                         "height": 8,
                         "element": {
@@ -3738,7 +3900,7 @@
                       "kind": "GridLayoutItem",
                       "spec": {
                         "x": 12,
-                        "y": 17,
+                        "y": 26,
                         "width": 12,
                         "height": 8,
                         "element": {

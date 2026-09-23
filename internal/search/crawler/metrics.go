@@ -115,6 +115,7 @@ type progressCollector struct {
 	layer string
 
 	cursorAt     *prometheus.Desc
+	latestPostAt *prometheus.Desc
 	caughtUpAt   *prometheus.Desc
 	lastFinished *prometheus.Desc
 	caughtUp     *prometheus.Desc
@@ -131,6 +132,7 @@ func NewProgressCollector(db *gorm.DB, layer string) prometheus.Collector {
 		db:           db,
 		layer:        layer,
 		cursorAt:     prometheus.NewDesc("crawler_replication_cursor_timestamp_seconds", "Replication cursor position (commit receipt time on the source server) as unix seconds; lag is time() minus this.", serverLabels, nil),
+		latestPostAt: prometheus.NewDesc("crawler_replication_latest_post_timestamp_seconds", "createdAt of the newest post applied from this server's log as unix seconds, never moved back by a backdated commit; time() minus this is how stale the indexed posts are, where the cursor gauge is how far the log has been read.", serverLabels, nil),
 		caughtUpAt:   prometheus.NewDesc("crawler_replication_caught_up_timestamp_seconds", "When the replication feed of this server was last drained, as unix seconds.", serverLabels, nil),
 		lastFinished: prometheus.NewDesc("crawler_replication_last_finished_timestamp_seconds", "When the last replication page of this server was applied, as unix seconds.", serverLabels, nil),
 		caughtUp:     prometheus.NewDesc("crawler_replication_caught_up", "1 when the last replication run drained the feed, 0 while the crawler is still catching up.", serverLabels, nil),
@@ -144,6 +146,7 @@ func NewProgressCollector(db *gorm.DB, layer string) prometheus.Collector {
 
 func (p *progressCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- p.cursorAt
+	ch <- p.latestPostAt
 	ch <- p.caughtUpAt
 	ch <- p.lastFinished
 	ch <- p.caughtUp
@@ -200,6 +203,9 @@ func (p *progressCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(p.caughtUp, prometheus.GaugeValue, boolValue(caughtUp), state.Domain)
 		if cursor.CursorAt != nil {
 			ch <- prometheus.MustNewConstMetric(p.cursorAt, prometheus.GaugeValue, float64(cursor.CursorAt.Unix()), state.Domain)
+		}
+		if cursor.LatestPostAt != nil {
+			ch <- prometheus.MustNewConstMetric(p.latestPostAt, prometheus.GaugeValue, float64(cursor.LatestPostAt.Unix()), state.Domain)
 		}
 		if cursor.CaughtUpAt != nil {
 			ch <- prometheus.MustNewConstMetric(p.caughtUpAt, prometheus.GaugeValue, float64(cursor.CaughtUpAt.Unix()), state.Domain)

@@ -49,9 +49,14 @@ type ServerState struct {
 // ReplicationCursor is the per-server position in the CIP-16 replication
 // feed. CursorAt only ever holds values taken from the server's own cursors
 // (prev/next, i.e. commit receipt time), never the crawler's clock.
+// LatestPostAt is the newest createdAt among the post records applied from
+// this feed: where CursorAt says how far the log has been read, this says how
+// fresh the indexed posts are. It never moves back, so a backdated import
+// arriving later in the log does not make the index look stale.
 type ReplicationCursor struct {
 	ServerDomain   string `gorm:"primaryKey;type:text"`
 	CursorAt       *time.Time
+	LatestPostAt   *time.Time
 	CaughtUpAt     *time.Time
 	LastStartedAt  *time.Time
 	LastFinishedAt *time.Time

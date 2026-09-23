@@ -630,8 +630,12 @@ func (c *Crawler) replicate(ctx context.Context, wkc concrnt.WellKnownConcrnt, c
 		if err != nil {
 			return false, err
 		}
-		if err := c.applyPage(ctx, wkc.Domain, result.Items); err != nil {
+		latestPost, err := c.applyPage(ctx, wkc.Domain, result.Items)
+		if err != nil {
 			return false, err
+		}
+		if !latestPost.IsZero() && (cursor.LatestPostAt == nil || latestPost.After(*cursor.LatestPostAt)) {
+			cursor.LatestPostAt = &latestPost
 		}
 		replicationPages.WithLabelValues(wkc.Domain).Inc()
 		// cursors are computed before read-access filtering, so items may be
@@ -652,6 +656,7 @@ func (c *Crawler) replicate(ctx context.Context, wkc concrnt.WellKnownConcrnt, c
 			cursor.CaughtUpAt = &now
 			return true, c.db.WithContext(ctx).Model(cursor).Updates(map[string]any{
 				"cursor_at":        cursorAt,
+				"latest_post_at":   cursor.LatestPostAt,
 				"caught_up_at":     now,
 				"last_finished_at": now,
 				"fail_count":       0,
@@ -678,6 +683,7 @@ func (c *Crawler) replicate(ctx context.Context, wkc concrnt.WellKnownConcrnt, c
 		cursor.CursorAt = &next
 		if err := c.db.WithContext(ctx).Model(cursor).Updates(map[string]any{
 			"cursor_at":        next,
+			"latest_post_at":   cursor.LatestPostAt,
 			"last_finished_at": time.Now().UTC(),
 			"fail_count":       0,
 			"last_error":       "",
@@ -695,8 +701,11 @@ func (c *Crawler) replicate(ctx context.Context, wkc concrnt.WellKnownConcrnt, c
 // applyPage applies one page of commits in log order. Upserts are batched per
 // index and flushed before any delete so a record deleted later in the same
 // page does not survive, and a key committed twice keeps its last document.
-func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []concrnt.SignedDocument) error {
+// It returns the newest createdAt among the posts it indexed (zero when the
+// page carried none).
+func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []concrnt.SignedDocument) (time.Time, error) {
 	indexedAt := time.Now().UTC()
+	var latestPost time.Time
 	users := map[string]normalize.UserDocument{}
 	communities := map[string]normalize.CommunityDocument{}
 	posts := map[string]normalize.PostDocument{}
@@ -820,6 +829,9 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 				}
 				if ok {
 					posts[post.ID] = post
+					if post.CreatedAt.After(latestPost) {
+						latestPost = post.CreatedAt
+					}
 					// the post record itself is the author's activity; the
 					// references a distribution leaves elsewhere are not
 					userEntries[doc.Key] = model.UserEntry{Author: doc.Author, EntryCCKV: doc.Key, CreatedAt: doc.CreatedAt}
@@ -844,15 +856,15 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 			}
 			replicationCommits.WithLabelValues(sourceServer, "delete").Inc()
 			if err := flush(); err != nil {
-				return err
+				return time.Time{}, err
 			}
 			for _, indexUID := range meili.RecordIndexes {
 				if err := c.store.DeleteRecords(ctx, indexUID, spec); err != nil {
-					return err
+					return time.Time{}, err
 				}
 			}
 			if err := c.deleteEntries(ctx, target); err != nil {
-				return err
+				return time.Time{}, err
 			}
 		case "ack", "unack", "acked", "unacked":
 			// one state per (acker, ackee, schema) triple (CIP-10 §4). The
@@ -881,7 +893,7 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 			replicationCommits.WithLabelValues(sourceServer, "ignored").Inc()
 		}
 	}
-	return flush()
+	return latestPost, flush()
 }
 
 // ackTarget returns the ackee of an ack-kind document: the owner of its

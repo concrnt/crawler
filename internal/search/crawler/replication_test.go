@@ -185,6 +185,9 @@ func TestCrawlServerAppliesCommitsInLogOrder(t *testing.T) {
 	if cursor.CaughtUpAt == nil || cursor.FailCount != 0 {
 		t.Fatalf("cursor should be caught up without failures: %+v", cursor)
 	}
+	if cursor.LatestPostAt == nil || !cursor.LatestPostAt.Equal(t0) {
+		t.Fatalf("latest post should be the createdAt of the indexed posts (%s), got %v", stamp(t0), cursor.LatestPostAt)
+	}
 
 	// entity, association and the list schema are ignored; the community
 	// record sits directly under a domain-owned key, so it is also an entry
@@ -249,6 +252,35 @@ func TestReplicateResumesBehindCursorAndContinuesPastEmptyPages(t *testing.T) {
 	// the drained page had no prev: keep the last next rather than fall back
 	if got.CursorAt == nil || !got.CursorAt.Equal(t2) {
 		t.Fatalf("cursor should advance to the last next (%s), got %v", stamp(t2), got.CursorAt)
+	}
+}
+
+func TestReplicateKeepsNewestPostTimestamp(t *testing.T) {
+	postAt := func(key string, createdAt time.Time) concrnt.SignedDocument {
+		raw, err := json.Marshal(concrnt.Document[any]{Kind: "record", Key: key, Value: map[string]string{"body": key}, Author: testAuthor, Schema: config.DefaultPostSchemas[0], CreatedAt: createdAt})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ccfs := "ccfs://a/concrnt/" + key
+		return concrnt.SignedDocument{CCFS: &ccfs, Document: string(raw), Proof: concrnt.Proof{Type: concrnt.ProofTypeNone}}
+	}
+	server := &replicationServer{t: t, pages: map[string]concrnt.QueryResult{
+		"": {
+			Items: []concrnt.SignedDocument{postAt(postsParent+"/old", t0), postAt(postsParent+"/new", t2)},
+			Prev:  &t0,
+			Next:  &t1,
+		},
+		// a backdated post logged later must not move the gauge back
+		stamp(t1): {Items: []concrnt.SignedDocument{postAt(postsParent+"/backdated", t0)}, Prev: &t1, Next: nil},
+	}}
+	c := newReplicationCrawler(t, server, &manualStore{}, config.Default().Crawl)
+
+	if err := c.crawlServer(context.Background(), model.ServerState{Domain: replicationDomain}); err != nil {
+		t.Fatal(err)
+	}
+	got := loadCursor(t, c)
+	if got.LatestPostAt == nil || !got.LatestPostAt.Equal(t2) {
+		t.Fatalf("latest post should stay at the newest createdAt seen (%s), got %v", stamp(t2), got.LatestPostAt)
 	}
 }
 
