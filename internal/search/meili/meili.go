@@ -456,6 +456,19 @@ func InFilter(field string, values []string) string {
 	return field + " IN [" + strings.Join(quoted, ", ") + "]"
 }
 
+// NotInFilter builds a `field NOT IN ["a", "b"]` filter, the complement of
+// InFilter. An empty list yields an empty filter (nothing excluded).
+func NotInFilter(field string, values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	quoted := make([]string, len(values))
+	for i, value := range values {
+		quoted[i] = "\"" + escapeFilterValue(value) + "\""
+	}
+	return field + " NOT IN [" + strings.Join(quoted, ", ") + "]"
+}
+
 // BuildSort validates a "field:asc|desc" expression ("field" alone means desc)
 // against the index's sortable attributes and returns it in Meilisearch form.
 func BuildSort(param string, allowed map[string]bool) ([]string, error) {

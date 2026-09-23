@@ -39,8 +39,39 @@ type fetchStore struct {
 	filters []string
 }
 
-func (s *fetchStore) Search(context.Context, string, string, int64, int64, string, []string) (*meilisearch.SearchResponse, error) {
-	return nil, nil
+// Search matches the query against name/username, honours an `IN` / `NOT IN`
+// filter on one field, keeps document order as the relevance order and pages
+// with limit/offset like Meilisearch does.
+func (s *fetchStore) Search(_ context.Context, indexUID string, query string, limit int64, offset int64, filter string, _ []string) (*meilisearch.SearchResponse, error) {
+	s.filters = append(s.filters, filter)
+	var all []map[string]any
+	for _, doc := range s.docs[indexUID] {
+		name, _ := doc["name"].(string)
+		username, _ := doc["username"].(string)
+		if query != "" && !strings.Contains(name, query) && !strings.Contains(username, query) {
+			continue
+		}
+		if filter != "" {
+			field, list, _ := strings.Cut(filter, " IN [")
+			negate := strings.HasSuffix(field, " NOT")
+			field = strings.TrimSuffix(field, " NOT")
+			value, _ := doc[field].(string)
+			if strings.Contains(list, `"`+value+`"`) == negate {
+				continue
+			}
+		}
+		copied := map[string]any{}
+		for k, v := range doc {
+			copied[k] = v
+		}
+		all = append(all, copied)
+	}
+	page := all[min(int(offset), len(all)):min(int(offset+limit), len(all))]
+	hits := make([]any, len(page))
+	for i, doc := range page {
+		hits[i] = doc
+	}
+	return &meilisearch.SearchResponse{Hits: hits, EstimatedTotalHits: int64(len(all))}, nil
 }
 
 func (s *fetchStore) Stats(context.Context) (*meilisearch.Stats, error) {
@@ -276,7 +307,6 @@ func TestViewerModeRejectsBadRequests(t *testing.T) {
 	h := newViewerHandler(t, &fetchStore{})
 	for _, path := range []string{
 		"/api/v1/search/users?viewer=not-a-ccid",
-		"/api/v1/search/users?viewer=" + viewer + "&q=hello",
 		"/api/v1/search/users?viewer=" + viewer + "&sort=createdAt",
 		"/api/v1/search/communities?viewer=example.com",
 		"/api/v1/search/communities?viewer=" + viewer + "&sort=activityScore",
@@ -288,5 +318,95 @@ func TestViewerModeRejectsBadRequests(t *testing.T) {
 	// the activity window shared with the tick is the one the ranking uses
 	if crawler.ActivityWindow != 30*24*time.Hour {
 		t.Fatalf("unexpected window %v", crawler.ActivityWindow)
+	}
+}
+
+func TestFolloweeCommunitiesKeyword(t *testing.T) {
+	other := "cckv://example.com/concrnt.world/communities/other"
+	store := &fetchStore{docs: map[string][]map[string]any{
+		meili.CommunitiesIndex: {
+			// relevance order: other, quiet, general; the followee rank must win over it
+			{"cckv": other, "name": "other chat"},
+			{"cckv": quiet, "name": "quiet chat"},
+			{"cckv": general, "name": "general chat"},
+			{"cckv": "cckv://example.com/concrnt.world/communities/silent", "name": "silence"},
+		},
+	}}
+	h := newViewerHandler(t, store)
+	now := time.Now().UTC()
+	seedFollows(t, h, now)
+
+	code, body := get(t, h, "/api/v1/search/communities?viewer="+viewer+"&q=chat")
+	if code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	got := hits(body)
+	if len(got) != 3 || got[0]["cckv"] != general || got[1]["cckv"] != quiet || got[2]["cckv"] != other {
+		t.Fatalf("ranked matches should come first, then the rest by relevance: %+v", got)
+	}
+	if got[0]["followeePostCount30d"] != float64(3) || len(got[0]["topAuthors"].([]any)) != 2 {
+		t.Fatalf("ranked hit should carry the followee fields: %+v", got[0])
+	}
+	if _, ok := got[2]["followeeScore"]; ok {
+		t.Fatalf("unranked hit must not carry followee fields: %+v", got[2])
+	}
+	if body["estimatedTotalHits"] != float64(3) || body["query"] != "chat" {
+		t.Fatalf("unexpected envelope: %+v", body)
+	}
+	if len(store.filters) != 2 || !strings.HasPrefix(store.filters[0], "cckv IN [") || !strings.HasPrefix(store.filters[1], "cckv NOT IN [") {
+		t.Fatalf("expected an IN search then a NOT IN search: %v", store.filters)
+	}
+
+	// the page is cut across the ranked matches and the rest
+	code, body = get(t, h, "/api/v1/search/communities?viewer="+viewer+"&q=chat&limit=2&offset=1")
+	if got := hits(body); code != http.StatusOK || len(got) != 2 || got[0]["cckv"] != quiet || got[1]["cckv"] != other || body["estimatedTotalHits"] != float64(3) {
+		t.Fatalf("unexpected second page: %d %+v", code, body)
+	}
+	code, body = get(t, h, "/api/v1/search/communities?viewer="+viewer+"&q=chat&limit=1&offset=2")
+	if got := hits(body); code != http.StatusOK || len(got) != 1 || got[0]["cckv"] != other {
+		t.Fatalf("offset past the ranked matches should page the rest: %d %+v", code, body)
+	}
+
+	// no match among the ranked keys: plain relevance order
+	_, body = get(t, h, "/api/v1/search/communities?viewer="+viewer+"&q=silence")
+	if got := hits(body); len(got) != 1 || got[0]["name"] != "silence" || body["estimatedTotalHits"] != float64(1) {
+		t.Fatalf("unexpected hits: %+v", body)
+	}
+
+	// a viewer following nobody searches without any key filter
+	store.filters = nil
+	_, body = get(t, h, "/api/v1/search/communities?viewer="+carol+"&q=chat")
+	if got := hits(body); len(got) != 3 || got[0]["cckv"] != other || len(store.filters) != 1 || store.filters[0] != "" {
+		t.Fatalf("no followees should yield relevance order without a filter: %+v %v", body, store.filters)
+	}
+}
+
+func TestFolloweeUsersKeyword(t *testing.T) {
+	store := &fetchStore{docs: map[string][]map[string]any{
+		meili.UsersIndex: {userDoc(carol, "main"), userDoc(alice, "work"), userDoc(alice, "main"), userDoc(bob, "main")},
+	}}
+	h := newViewerHandler(t, store)
+	now := time.Now().UTC()
+	seedFollows(t, h, now)
+
+	// every profile document matches "/"; bob ranks above alice, whose two profiles keep relevance order, then carol
+	code, body := get(t, h, "/api/v1/search/users?viewer="+viewer+"&q=/")
+	if code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	got := hits(body)
+	if len(got) != 4 || got[0]["ccid"] != bob || got[1]["cckv"] != "cckv://"+alice+"/concrnt.world/profiles/work" || got[2]["cckv"] != "cckv://"+alice+"/concrnt.world/profiles/main" || got[3]["ccid"] != carol {
+		t.Fatalf("unexpected order: %+v", got)
+	}
+	if got[1]["followeePostCount30d"] != float64(1) || got[2]["followeePostCount30d"] != float64(1) {
+		t.Fatalf("both of alice's profiles should carry her rank: %+v", got[1:3])
+	}
+	if body["estimatedTotalHits"] != float64(4) {
+		t.Fatalf("unexpected envelope: %+v", body)
+	}
+	// a subprofile is a hit in its own right when it is what matched
+	_, body = get(t, h, "/api/v1/search/users?viewer="+viewer+"&q=work")
+	if got := hits(body); len(got) != 1 || got[0]["cckv"] != "cckv://"+alice+"/concrnt.world/profiles/work" {
+		t.Fatalf("unexpected hits: %+v", body)
 	}
 }

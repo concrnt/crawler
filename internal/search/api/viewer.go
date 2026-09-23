@@ -29,15 +29,20 @@ type followeeRank struct {
 	Authors map[string]int
 }
 
+// keywordFetchLimit caps how many followee-ranked documents a keyword search
+// pulls from Meilisearch in one go (a user has one document per profile).
+const keywordFetchLimit = 1000
+
 // viewerWindow validates the viewer-mode request. The ranking is decided
-// here from the follow graph, so a text query or a sort make no sense with
-// it and are rejected rather than silently ignored.
+// here from the follow graph, so a sort makes no sense with it and is
+// rejected rather than silently ignored. A text query is allowed: it narrows
+// the ranked keys to the matches and appends the other matches after them.
 func viewerWindow(c echo.Context, viewer string) (limit int, offset int, err error) {
 	if !concrnt.IsCCID(viewer) {
 		return 0, 0, echo.NewHTTPError(http.StatusBadRequest, "viewer must be a CCID")
 	}
-	if c.QueryParam("q") != "" || c.QueryParam("sort") != "" {
-		return 0, 0, echo.NewHTTPError(http.StatusBadRequest, "viewer mode does not accept q or sort")
+	if c.QueryParam("sort") != "" {
+		return 0, 0, echo.NewHTTPError(http.StatusBadRequest, "viewer mode does not accept sort")
 	}
 	limit = parseInt(c.QueryParam("limit"), 20)
 	if limit < 1 {
@@ -114,18 +119,77 @@ func topAuthors(counts map[string]int) []string {
 	return authors[:min(topAuthorsLimit, len(authors))]
 }
 
-func (h *Handler) viewerResponse(c echo.Context, hits []map[string]any, limit int, offset int, total int, started time.Time) error {
+func (h *Handler) viewerResponse(c echo.Context, hits []map[string]any, query string, limit int, offset int, total int, started time.Time) error {
 	if hits == nil {
 		hits = []map[string]any{}
 	}
 	return c.JSON(http.StatusOK, map[string]any{
 		"hits":               hits,
-		"query":              "",
+		"query":              query,
 		"limit":              limit,
 		"offset":             offset,
 		"estimatedTotalHits": total,
 		"processingTimeMs":   time.Since(started).Milliseconds(),
 	})
+}
+
+// keywordSearch is the viewer mode with a text query: the keys the
+// followees are active in are searched first and ordered by their rank, then
+// the remaining matches follow in relevance order, so a sort by followee
+// activity still lists every match. The page is cut across the two lists and
+// the total is the ranked matches plus Meilisearch's estimate of the rest.
+func (h *Handler) keywordSearch(c echo.Context, indexUID string, field string, query string, ranks []followeeRank, limit int, offset int, annotate func(doc map[string]any, rank followeeRank)) ([]map[string]any, int, error) {
+	ctx := c.Request().Context()
+	keys := make([]string, len(ranks))
+	byKey := make(map[string]int, len(ranks))
+	for i, rank := range ranks {
+		keys[i] = rank.Key
+		byKey[rank.Key] = i
+	}
+	var matched []map[string]any
+	if len(ranks) > 0 {
+		resp, err := h.store.Search(ctx, indexUID, query, keywordFetchLimit, 0, meili.InFilter(field, keys), nil)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, hit := range resp.Hits {
+			doc, ok := hit.(map[string]any)
+			if !ok {
+				continue
+			}
+			key, _ := doc[field].(string)
+			if _, ok := byKey[key]; !ok {
+				continue
+			}
+			matched = append(matched, doc)
+		}
+		// ranks are already sorted by score then key; a stable sort keeps the
+		// relevance order between documents of the same key (a user's profiles)
+		sort.SliceStable(matched, func(i, j int) bool {
+			ki, _ := matched[i][field].(string)
+			kj, _ := matched[j][field].(string)
+			return byKey[ki] < byKey[kj]
+		})
+		for _, doc := range matched {
+			key, _ := doc[field].(string)
+			annotate(doc, ranks[byKey[key]])
+		}
+	}
+	page := matched[min(offset, len(matched)):min(offset+limit, len(matched))]
+	restLimit := limit - len(page)
+	restOffset := max(0, offset-len(matched))
+	// NotInFilter of no keys is empty, so an unranked viewer gets plain relevance order
+	resp, err := h.store.Search(ctx, indexUID, query, int64(restLimit), int64(restOffset), meili.NotInFilter(field, keys), nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	hits := append([]map[string]any{}, page...)
+	for _, hit := range resp.Hits {
+		if doc, ok := hit.(map[string]any); ok {
+			hits = append(hits, doc)
+		}
+	}
+	return hits, len(matched) + int(resp.EstimatedTotalHits), nil
 }
 
 // followeeUsers ranks the viewer's followees by their own recent posts and
@@ -158,9 +222,21 @@ func (h *Handler) followeeUsers(c echo.Context, viewer string) error {
 	for i, row := range rows {
 		entries[i] = followeeEntry{Key: row.Author, Author: row.Author, CreatedAt: row.CreatedAt}
 	}
+	if query := c.QueryParam("q"); query != "" {
+		// every matching profile document is a hit here (a subprofile can be what matched)
+		ranks, _ := rankFollowees(entries, now, h.halfLife, len(entries), 0)
+		hits, total, err := h.keywordSearch(c, meili.UsersIndex, "ccid", query, ranks, limit, offset, func(doc map[string]any, rank followeeRank) {
+			doc["followeeScore"] = rank.Score
+			doc["followeePostCount30d"] = rank.Count
+		})
+		if err != nil {
+			return err
+		}
+		return h.viewerResponse(c, hits, query, limit, offset, total, started)
+	}
 	page, total := rankFollowees(entries, now, h.halfLife, limit, offset)
 	if len(page) == 0 {
-		return h.viewerResponse(c, nil, limit, offset, total, started)
+		return h.viewerResponse(c, nil, "", limit, offset, total, started)
 	}
 
 	ccids := make([]string, len(page))
@@ -200,7 +276,7 @@ func (h *Handler) followeeUsers(c echo.Context, viewer string) error {
 		doc["followeePostCount30d"] = rank.Count
 		hits = append(hits, doc)
 	}
-	return h.viewerResponse(c, hits, limit, offset, total, started)
+	return h.viewerResponse(c, hits, "", limit, offset, total, started)
 }
 
 // followeeCommunities ranks the indexed communities by the recent entries
@@ -232,9 +308,21 @@ func (h *Handler) followeeCommunities(c echo.Context, viewer string) error {
 	for i, row := range rows {
 		entries[i] = followeeEntry{Key: row.CommunityCCKV, Author: row.Author, CreatedAt: row.CreatedAt}
 	}
+	if query := c.QueryParam("q"); query != "" {
+		ranks, _ := rankFollowees(entries, now, h.halfLife, len(entries), 0)
+		hits, total, err := h.keywordSearch(c, meili.CommunitiesIndex, "cckv", query, ranks, limit, offset, func(doc map[string]any, rank followeeRank) {
+			doc["followeeScore"] = rank.Score
+			doc["followeePostCount30d"] = rank.Count
+			doc["topAuthors"] = topAuthors(rank.Authors)
+		})
+		if err != nil {
+			return err
+		}
+		return h.viewerResponse(c, hits, query, limit, offset, total, started)
+	}
 	page, total := rankFollowees(entries, now, h.halfLife, limit, offset)
 	if len(page) == 0 {
-		return h.viewerResponse(c, nil, limit, offset, total, started)
+		return h.viewerResponse(c, nil, "", limit, offset, total, started)
 	}
 
 	keys := make([]string, len(page))
@@ -261,5 +349,5 @@ func (h *Handler) followeeCommunities(c echo.Context, viewer string) error {
 		doc["topAuthors"] = topAuthors(rank.Authors)
 		hits = append(hits, doc)
 	}
-	return h.viewerResponse(c, hits, limit, offset, total, started)
+	return h.viewerResponse(c, hits, "", limit, offset, total, started)
 }

@@ -202,11 +202,16 @@ GET /api/v1/search/communities?q=general&limit=20&offset=0&sourceServer=example.
 ```http
 GET /api/v1/search/users?viewer=con...&limit=20&offset=0
 GET /api/v1/search/communities?viewer=con...&limit=20&offset=0
+GET /api/v1/search/communities?viewer=con...&q=hello&limit=20&offset=0
 ```
 
 `viewer` (CCID) を指定すると、その閲覧者がフォローしている (`ackSchemas` の有効な ack がある) ユーザーの直近 30 日の投稿から
 リクエスト時に順位付けします。スコアは `activityScore` と同じ式 (`2^(-経過時間/activityHalfLife)` の合計) で、同点は key の昇順です。
-`q` と `sort` は受け付けません (400)。`sourceServer` / `owner` / `cckv` は無視します。
+`sort` は受け付けません (400)。`sourceServer` / `owner` / `cckv` は無視します。
+`q` を付けるとキーワード検索の並び順として働きます: 順位付けされた key のうち検索に一致した文書をスコア順に先頭へ並べ、
+その後ろに残りの一致文書を関連度順で続けます (フォロー先の活動が無い一致も落としません)。ページは両者をまたいで切り、
+`estimatedTotalHits` は「順位付け側の一致件数 + 残りの推定件数」です。users は `q` ありのとき一致したプロフィール文書を
+すべて hit にします (サブプロフィールが一致した場合はそれ自体が hit)。
 
 - users: フォロー先のうち索引済みのユーザーを、本人の投稿量で並べます。hit は CCID につき 1 文書 (main プロフィール優先) で、
   グローバル集計のフィールドに加えて `followeeScore` / `followeePostCount30d` が入ります。
