@@ -3,8 +3,10 @@ package meili
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -176,11 +178,24 @@ func (s *Store) UpsertServers(ctx context.Context, docs []ServerDocument) error 
 	return s.waitTask(ctx, task, err)
 }
 
+// UpsertUsers keeps the earliest createdAt the index has seen for a key (see
+// existingCreatedAt), so an edited profile does not surface as new.
 func (s *Store) UpsertUsers(ctx context.Context, docs []normalize.UserDocument) error {
 	if len(docs) == 0 {
 		return nil
 	}
 	defer prometheus.NewTimer(meiliWriteDuration.WithLabelValues("users")).ObserveDuration()
+	ids := make([]string, len(docs))
+	for i, doc := range docs {
+		ids[i] = doc.ID
+	}
+	existing, err := s.existingCreatedAt(ctx, UsersIndex, ids)
+	if err != nil {
+		return err
+	}
+	for i := range docs {
+		docs[i].CreatedAt = earliestCreatedAt(existing, docs[i].ID, docs[i].CreatedAt)
+	}
 	index := s.client.Index(UsersIndex)
 	task, err := index.AddDocumentsWithContext(ctx, docs, "id")
 	return s.waitTask(ctx, task, err)
@@ -189,12 +204,24 @@ func (s *Store) UpsertUsers(ctx context.Context, docs []normalize.UserDocument) 
 // UpsertCommunities merges (PUT) rather than replaces so the activity fields
 // written by UpdateCommunityActivity survive a re-commit of the community
 // record. CommunityDocument emits every field, so the merge is a full overwrite
-// of the record-derived part.
+// of the record-derived part, except createdAt, which keeps the earliest value
+// the index has seen for the key (see existingCreatedAt).
 func (s *Store) UpsertCommunities(ctx context.Context, docs []normalize.CommunityDocument) error {
 	if len(docs) == 0 {
 		return nil
 	}
 	defer prometheus.NewTimer(meiliWriteDuration.WithLabelValues("communities")).ObserveDuration()
+	ids := make([]string, len(docs))
+	for i, doc := range docs {
+		ids[i] = doc.ID
+	}
+	existing, err := s.existingCreatedAt(ctx, CommunitiesIndex, ids)
+	if err != nil {
+		return err
+	}
+	for i := range docs {
+		docs[i].CreatedAt = earliestCreatedAt(existing, docs[i].ID, docs[i].CreatedAt)
+	}
 	index := s.client.Index(CommunitiesIndex)
 	task, err := index.UpdateDocumentsWithContext(ctx, docs, "id")
 	return s.waitTask(ctx, task, err)
@@ -211,6 +238,43 @@ func (s *Store) UpdateCommunityActivity(ctx context.Context, docs []CommunityAct
 	index := s.client.Index(CommunitiesIndex)
 	task, err := index.UpdateDocumentsWithContext(ctx, docs, "id")
 	return s.waitTask(ctx, task, err)
+}
+
+// existingCreatedAt returns the createdAt of the documents already in an
+// index, keyed by id; ids not in the index are absent. A record is
+// re-committed with a fresh createdAt on every edit, and a server coming back
+// from a long outage replays its whole log, so "newest" sorted on the latest
+// commit's createdAt would fill up with old users and communities. The index
+// therefore keeps the earliest createdAt it has seen for a key. Posts are
+// never edited, so only users and communities go through this.
+func (s *Store) existingCreatedAt(ctx context.Context, indexUID string, ids []string) (map[string]time.Time, error) {
+	index := s.client.Index(indexUID)
+	existing := make(map[string]time.Time, len(ids))
+	for _, id := range ids {
+		var doc struct {
+			CreatedAt time.Time `json:"createdAt"`
+		}
+		err := index.GetDocumentWithContext(ctx, id, &meilisearch.DocumentQuery{Fields: []string{"createdAt"}}, &doc)
+		if err != nil {
+			var merr *meilisearch.Error
+			if errors.As(err, &merr) && merr.StatusCode == http.StatusNotFound {
+				continue
+			}
+			return nil, fmt.Errorf("get %s/%s: %w", indexUID, id, err)
+		}
+		existing[id] = doc.CreatedAt
+	}
+	return existing, nil
+}
+
+// earliestCreatedAt picks the createdAt to store for id: the indexed one when
+// it is earlier than the incoming one. A missing or zero indexed value (a
+// document written before createdAt was kept) yields the incoming one.
+func earliestCreatedAt(existing map[string]time.Time, id string, incoming time.Time) time.Time {
+	if at, ok := existing[id]; ok && !at.IsZero() && at.Before(incoming) {
+		return at
+	}
+	return incoming
 }
 
 func (s *Store) UpsertPosts(ctx context.Context, docs []normalize.PostDocument) error {

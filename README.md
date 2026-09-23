@@ -96,7 +96,8 @@ observability:
 
 - コミュニティ key の直下に着信した record (通常は CIP-7 配送が残す reference record `<community>/<cdid>`) を、
   schema を問わず 1 件の活動として Postgres (`community_entries`) に積みます。reply / reroute も含みます。
-  親 key が索引済みコミュニティでない record は捨てます。
+  親 key が索引済みコミュニティでない record は捨てます。着信時刻は record の `createdAt` (reference なら配送元サーバーが
+  配送を作った時刻) で、同じ key の再 commit (編集) では据え置きます。編集は活動に数えません。
 - `activityInterval` ごとに索引済みコミュニティ全件について次を計算し、`concrnt_communities` の文書へ部分更新で書き込みます。
   - `activityScore`: 直近 30 日の着信について `2^(-経過時間/activityHalfLife)` を合計した値
   - `postCount7d` / `postCount30d`: 直近 7 日 / 30 日の着信数
@@ -151,6 +152,8 @@ GET /health
 ```http
 GET /api/v1/search/users?q=alice&limit=20&offset=0&sourceServer=example.net&owner=con...
 ```
+
+`sort` 未指定時は `createdAt:desc` です。ユーザーとコミュニティの `createdAt` は、そのキーで最初に索引した record の `createdAt` (より古い `createdAt` の record が後から来た場合はそれ) を保持します。プロフィールの編集や、長期間オフラインだったサーバーのログ再生で新着扱いにはなりません。`indexedAt` は最後に索引した時刻です。
 
 ### Search Communities
 

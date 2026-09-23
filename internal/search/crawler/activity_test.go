@@ -2,6 +2,7 @@ package crawler
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"slices"
 	"strings"
@@ -110,6 +111,27 @@ func TestApplyPageRecordsEntriesUnderIndexedCommunities(t *testing.T) {
 	}
 	if entries := loadEntries(t, c); len(entries) != 3 {
 		t.Fatalf("expected 3 entries after the second page, got %+v", entries)
+	}
+
+	// a re-commit of ref1 (an edit: same key, later createdAt) refreshes the
+	// row but not created_at, so the edit is not counted as new activity
+	recommit := ref(general + "/ref1")
+	var edited concrnt.Document[map[string]string]
+	if err := json.Unmarshal([]byte(recommit.Document), &edited); err != nil {
+		t.Fatal(err)
+	}
+	edited.CreatedAt = t0.Add(48 * time.Hour)
+	edited.Author = otherAuthor
+	raw, err := json.Marshal(edited)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recommit.Document = string(raw)
+	if err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{recommit}); err != nil {
+		t.Fatal(err)
+	}
+	if entries := loadEntries(t, c); len(entries) != 3 || entries[1].EntryCCKV != general+"/ref1" || !entries[1].CreatedAt.Equal(t0) || entries[1].Author != otherAuthor {
+		t.Fatalf("re-commit should keep created_at and refresh the rest, got %+v", entries)
 	}
 
 	// deleting the referenced post sweeps its reference (matched by href);

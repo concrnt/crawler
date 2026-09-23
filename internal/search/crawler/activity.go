@@ -50,8 +50,10 @@ func (c *Crawler) mirrorCommunities(ctx context.Context, keys []string, indexedA
 }
 
 // recordCommunityEntries keeps the entries whose parent is an indexed
-// community and upserts them; a re-committed reference keeps its key (CIP-7
-// §4.1) and simply refreshes its row.
+// community and upserts them. A re-committed reference keeps its key (CIP-7
+// §4.1) and refreshes its row, except created_at: the server stamps the new
+// reference with the time of the re-commit, and an edit is not activity, so
+// the entry keeps the createdAt it was first seen with.
 func (c *Crawler) recordCommunityEntries(ctx context.Context, entries []model.CommunityEntry) error {
 	parents := map[string]bool{}
 	for _, entry := range entries {
@@ -79,7 +81,7 @@ func (c *Crawler) recordCommunityEntries(ctx context.Context, entries []model.Co
 	}
 	return c.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "community_cckv"}, {Name: "entry_cckv"}},
-		DoUpdates: clause.AssignmentColumns([]string{"author", "href", "created_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"author", "href"}),
 	}).Create(&rows).Error
 }
 
