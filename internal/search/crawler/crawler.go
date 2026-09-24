@@ -459,6 +459,7 @@ func (c *Crawler) crawlServer(ctx context.Context, state model.ServerState) erro
 
 	c.logger.Info("server crawl started", slog.String("server", state.Domain))
 	var joined error
+	startedAt := cursor.CursorAt
 	// keep reading until the feed is drained: a run is capped at maxPagesPerRun
 	// so progress lands in the cursor in slices, but waiting a whole tick
 	// between slices would take days to get through a long log
@@ -490,6 +491,12 @@ func (c *Crawler) crawlServer(ctx context.Context, state model.ServerState) erro
 		updates["last_error_at"] = nil
 	} else {
 		c.markServerFailure(ctx, state.Domain, joined)
+		if cursor.CursorAt != nil && (startedAt == nil || cursor.CursorAt.After(*startedAt)) {
+			// the server served pages before the error, so it is not
+			// failing: a long catch-up would otherwise climb the backoff
+			// ladder one transient error per run. Count from this one.
+			updates["fail_count"] = 1
+		}
 	}
 	if err := c.db.WithContext(ctx).Model(&model.ServerState{}).Where("domain = ?", state.Domain).Updates(updates).Error; err != nil {
 		return err
@@ -932,17 +939,19 @@ func (c *Crawler) markServerFailure(ctx context.Context, domain string, err erro
 	}
 }
 
+// BackoffDuration doubles from five seconds per consecutive failure and
+// settles at an hour after about ten of them; anything shorter than the crawl
+// tick only means "retry at the next tick".
 func BackoffDuration(failCount int) time.Duration {
-	switch {
-	case failCount <= 1:
+	if failCount <= 0 {
 		return 0
-	case failCount == 2:
-		return 5 * time.Minute
-	case failCount == 3:
-		return 15 * time.Minute
-	default:
-		return time.Hour
 	}
+	const limit = time.Hour
+	d := 5 * time.Second
+	for i := 1; i < failCount && d < limit; i++ {
+		d *= 2
+	}
+	return min(d, limit)
 }
 
 func ShouldBackoff(failCount int, lastErrorAt *time.Time, now time.Time) bool {

@@ -115,7 +115,7 @@ func Default() Config {
 		Crawl: Crawl{
 			KnownServersInterval: Duration(10 * time.Minute),
 			IncrementalInterval:  Duration(15 * time.Minute),
-			RequestTimeout:       Duration(10 * time.Second),
+			RequestTimeout:       Duration(30 * time.Second),
 			GlobalConcurrency:    8,
 			PerServerConcurrency: 1,
 			PageLimit:            100,
@@ -184,7 +184,7 @@ func (c *Config) Validate() error {
 		c.Crawl.IncrementalInterval = Duration(15 * time.Minute)
 	}
 	if c.Crawl.RequestTimeout.Duration() <= 0 {
-		c.Crawl.RequestTimeout = Duration(10 * time.Second)
+		c.Crawl.RequestTimeout = Duration(30 * time.Second)
 	}
 	if c.Crawl.GlobalConcurrency <= 0 {
 		c.Crawl.GlobalConcurrency = 1

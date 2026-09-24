@@ -29,8 +29,8 @@ func TestProgressCollectorExportsPerServerReplicationState(t *testing.T) {
 		{ServerDomain: "caught.test", CursorAt: &t0, LatestPostAt: &t0, CaughtUpAt: &t1, LastFinishedAt: &t1},
 		// hit maxPagesPerRun since the last drain
 		{ServerDomain: "capped.test", CursorAt: &t1, LatestPostAt: &t1, CaughtUpAt: &t0, LastFinishedAt: &t1},
-		// two failures a minute ago: inside the backoff ladder
-		{ServerDomain: "failing.test", FailCount: 2, LastErrorAt: &recentError},
+		// eight failures a minute ago: still inside the ~10 minute backoff
+		{ServerDomain: "failing.test", FailCount: 8, LastErrorAt: &recentError},
 		{ServerDomain: "disabled.test", CursorAt: &t0, CaughtUpAt: &t0, LastFinishedAt: &t0},
 		{ServerDomain: "other.test", CursorAt: &t0, CaughtUpAt: &t0, LastFinishedAt: &t0},
 	}
@@ -74,7 +74,7 @@ crawler_replication_cursor_timestamp_seconds{server="disabled.test"} %[1]d
 crawler_replication_consecutive_failures{server="capped.test"} 0
 crawler_replication_consecutive_failures{server="caught.test"} 0
 crawler_replication_consecutive_failures{server="disabled.test"} 0
-crawler_replication_consecutive_failures{server="failing.test"} 2
+crawler_replication_consecutive_failures{server="failing.test"} 8
 # HELP crawler_replication_last_finished_timestamp_seconds When the last replication page of this server was applied, as unix seconds.
 # TYPE crawler_replication_last_finished_timestamp_seconds gauge
 crawler_replication_last_finished_timestamp_seconds{server="capped.test"} %[2]d

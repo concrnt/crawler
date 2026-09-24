@@ -329,6 +329,52 @@ func TestReplicateRejectsBackwardsCursor(t *testing.T) {
 	}
 }
 
+func TestCrawlServerResetsFailCountWhenPagesProgressed(t *testing.T) {
+	server := &replicationServer{t: t, pages: map[string]concrnt.QueryResult{
+		"":        {Items: nil, Prev: &t0, Next: &t1},
+		stamp(t1): {Items: nil, Prev: &t1, Next: &t0},
+	}}
+	c := newReplicationCrawler(t, server, &manualStore{}, config.Default().Crawl)
+	old := t0.Add(-time.Hour)
+	if err := c.db.Create(&model.ServerState{Domain: replicationDomain, FailCount: 7, LastErrorAt: &old, LastError: "earlier"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.crawlServer(context.Background(), model.ServerState{Domain: replicationDomain}); err == nil {
+		t.Fatal("expected the backwards-cursor error to be reported")
+	}
+	var state model.ServerState
+	if err := c.db.First(&state, "domain = ?", replicationDomain).Error; err != nil {
+		t.Fatal(err)
+	}
+	if state.FailCount != 1 {
+		t.Fatalf("a run that applied a page before failing counts as the first failure, got %+v", state)
+	}
+	if state.LastError == "" || !strings.Contains(state.LastError, "backwards") {
+		t.Fatalf("the error itself is still recorded: %+v", state)
+	}
+}
+
+func TestCrawlServerKeepsClimbingWithoutProgress(t *testing.T) {
+	server := &replicationServer{t: t, status: http.StatusInternalServerError}
+	c := newReplicationCrawler(t, server, &manualStore{}, config.Default().Crawl)
+	old := t0.Add(-time.Hour)
+	if err := c.db.Create(&model.ServerState{Domain: replicationDomain, FailCount: 7, LastErrorAt: &old}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.crawlServer(context.Background(), model.ServerState{Domain: replicationDomain}); err == nil {
+		t.Fatal("expected the 500 to be reported")
+	}
+	var state model.ServerState
+	if err := c.db.First(&state, "domain = ?", replicationDomain).Error; err != nil {
+		t.Fatal(err)
+	}
+	if state.FailCount != 8 {
+		t.Fatalf("a run that failed on its first page climbs the ladder, got %+v", state)
+	}
+}
+
 func TestReplicateStopsAtMaxPagesPerRun(t *testing.T) {
 	cfg := config.Default().Crawl
 	cfg.MaxPagesPerRun = 1

@@ -8,7 +8,7 @@ crawl:
   layer: "concrnt-mainnet"
   knownServersInterval: "10m"
   incrementalInterval: "15m"
-  requestTimeout: "10s"
+  requestTimeout: "30s"
   globalConcurrency: 8
   perServerConcurrency: 1
   pageLimit: 100

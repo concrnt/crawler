@@ -11,18 +11,41 @@ import (
 	"github.com/concrnt/concrnt-crawler/internal/search/config"
 )
 
+func TestBackoffDuration(t *testing.T) {
+	for failCount, want := range map[int]time.Duration{
+		0:  0,
+		1:  5 * time.Second,
+		2:  10 * time.Second,
+		4:  40 * time.Second,
+		8:  640 * time.Second,
+		10: 2560 * time.Second,
+		11: time.Hour,
+		12: time.Hour,
+		40: time.Hour,
+		70: time.Hour,
+	} {
+		if got := BackoffDuration(failCount); got != want {
+			t.Errorf("BackoffDuration(%d) = %v, want %v", failCount, got, want)
+		}
+	}
+}
+
 func TestShouldBackoff(t *testing.T) {
 	now := time.Date(2026, 5, 15, 1, 0, 0, 0, time.UTC)
-	last := now.Add(-4 * time.Minute)
+	last := now.Add(-4 * time.Second)
+	if ShouldBackoff(0, &last, now) {
+		t.Fatal("a server without failures never backs off")
+	}
+	if !ShouldBackoff(1, &last, now) {
+		t.Fatal("first failure should back off for five seconds")
+	}
+	last = now.Add(-6 * time.Second)
 	if ShouldBackoff(1, &last, now) {
-		t.Fatal("first failure should wait until the next scheduled interval only")
+		t.Fatal("first failure backoff should expire after five seconds")
 	}
-	if !ShouldBackoff(2, &last, now) {
-		t.Fatal("second failure should back off for five minutes")
-	}
-	last = now.Add(-6 * time.Minute)
-	if ShouldBackoff(2, &last, now) {
-		t.Fatal("second failure backoff should expire after five minutes")
+	last = now.Add(-59 * time.Minute)
+	if !ShouldBackoff(11, &last, now) {
+		t.Fatal("repeated failures should back off for an hour")
 	}
 }
 

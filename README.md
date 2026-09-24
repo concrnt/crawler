@@ -53,7 +53,7 @@ crawl:
   layer: "concrnt-mainnet"
   knownServersInterval: "10m"
   incrementalInterval: "15m"
-  requestTimeout: "15s"
+  requestTimeout: "30s"
   globalConcurrency: 2
   pageLimit: 100
   overlap: "10s"
