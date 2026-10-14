@@ -53,7 +53,7 @@ func Run(ctx context.Context, cfg searchconfig.Config, version string) error {
 	}
 
 	concrntClient := client.New(cfg.Crawl.Seed)
-	concrntClient.SetUserAgent("concrnt-crawler", version)
+	concrntClient.SetUserAgent(crawler.UserAgentProduct, version)
 	concrntClient.GetClient().Timeout = cfg.Crawl.RequestTimeout.Duration()
 
 	searchCrawler := crawler.New(db, searchStore, concrntClient, cfg.Crawl, slog.Default())

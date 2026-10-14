@@ -19,7 +19,7 @@ func TestProgressCollectorExportsPerServerReplicationState(t *testing.T) {
 	servers := []model.ServerState{
 		{Domain: "caught.test", Layer: layer, LastCrawledAt: &t2},
 		{Domain: "capped.test", Layer: layer, LastCrawledAt: &t1},
-		{Domain: "fresh.test", Layer: layer},
+		{Domain: "fresh.test", Layer: layer, RobotsDisallowed: true},
 		{Domain: "failing.test", Layer: layer, FailCount: 1, LastCrawledAt: &t0},
 		{Domain: "disabled.test", Layer: layer, Disabled: true, LastCrawledAt: &t0},
 		{Domain: "other.test", Layer: "concrnt-testnet", LastCrawledAt: &t0},
@@ -98,6 +98,13 @@ crawler_server_consecutive_failures{server="caught.test"} 0
 crawler_server_consecutive_failures{server="disabled.test"} 0
 crawler_server_consecutive_failures{server="failing.test"} 1
 crawler_server_consecutive_failures{server="fresh.test"} 0
+# HELP crawler_server_robots_disallowed 1 when the server's robots.txt denies the crawler its replication endpoint at the last check.
+# TYPE crawler_server_robots_disallowed gauge
+crawler_server_robots_disallowed{server="capped.test"} 0
+crawler_server_robots_disallowed{server="caught.test"} 0
+crawler_server_robots_disallowed{server="disabled.test"} 0
+crawler_server_robots_disallowed{server="failing.test"} 0
+crawler_server_robots_disallowed{server="fresh.test"} 1
 # HELP crawler_server_last_crawled_timestamp_seconds When the last crawl of this server finished, as unix seconds.
 # TYPE crawler_server_last_crawled_timestamp_seconds gauge
 crawler_server_last_crawled_timestamp_seconds{server="capped.test"} %[2]d

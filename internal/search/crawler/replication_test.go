@@ -40,10 +40,22 @@ type replicationServer struct {
 	pages    map[string]concrnt.QueryResult
 	status   int
 	requests []string
+	// robots is served as /robots.txt; robotsStatus, when set, replaces the
+	// file with an empty response of that status. Neither set: 404, no file
+	robots       string
+	robotsStatus int
 }
 
 func (s *replicationServer) RoundTrip(r *http.Request) (*http.Response, error) {
 	switch r.URL.Path {
+	case "/robots.txt":
+		if s.robotsStatus != 0 {
+			return &http.Response{StatusCode: s.robotsStatus, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+		}
+		if s.robots == "" {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found")), Header: make(http.Header)}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(s.robots)), Header: http.Header{"Content-Type": {"text/plain"}}}, nil
 	case "/.well-known/concrnt":
 		return jsonResponse(s.t, concrnt.WellKnownConcrnt{
 			Domain: replicationDomain,
@@ -221,6 +233,7 @@ func resetCounters() {
 	replicationCommits.Reset()
 	replicationMalformed.Reset()
 	serverCrawls.Reset()
+	robotsRequests.Reset()
 }
 
 func TestReplicateResumesBehindCursorAndContinuesPastEmptyPages(t *testing.T) {

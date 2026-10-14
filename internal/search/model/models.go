@@ -44,6 +44,11 @@ type ServerState struct {
 	LastError     string `gorm:"type:text"`
 	FailCount     int
 	Disabled      bool
+	// RobotsDisallowed is the verdict of the server's robots.txt at
+	// RobotsCheckedAt: true when it denies concrnt-crawler the replication
+	// endpoint, so the server is skipped until the file changes.
+	RobotsDisallowed bool
+	RobotsCheckedAt  *time.Time
 }
 
 // ReplicationCursor is the per-server position in the CIP-16 replication

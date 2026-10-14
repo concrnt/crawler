@@ -49,6 +49,13 @@ var (
 		Help:      "Commits skipped because they could not be decoded, by server and kind (commit, profile, community, post, delete, ack).",
 	}, []string{"server", "kind"})
 
+	robotsRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "crawler",
+		Subsystem: "robots",
+		Name:      "requests_total",
+		Help:      "robots.txt fetches by server and result (ok: a file or a 4xx, error: 5xx or the request failed, which skips the crawl).",
+	}, []string{"server", "result"})
+
 	crawlRuns = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "crawler",
 		Subsystem: "crawl",
@@ -124,6 +131,7 @@ type progressCollector struct {
 	serverFails  *prometheus.Desc
 	lastCrawled  *prometheus.Desc
 	disabled     *prometheus.Desc
+	robots       *prometheus.Desc
 }
 
 func NewProgressCollector(db *gorm.DB, layer string) prometheus.Collector {
@@ -141,6 +149,7 @@ func NewProgressCollector(db *gorm.DB, layer string) prometheus.Collector {
 		serverFails:  prometheus.NewDesc("crawler_server_consecutive_failures", "Consecutive crawl failures recorded on the server.", serverLabels, nil),
 		lastCrawled:  prometheus.NewDesc("crawler_server_last_crawled_timestamp_seconds", "When the last crawl of this server finished, as unix seconds.", serverLabels, nil),
 		disabled:     prometheus.NewDesc("crawler_server_disabled", "1 when the server is excluded from crawling.", serverLabels, nil),
+		robots:       prometheus.NewDesc("crawler_server_robots_disallowed", "1 when the server's robots.txt denies the crawler its replication endpoint at the last check.", serverLabels, nil),
 	}
 }
 
@@ -155,6 +164,7 @@ func (p *progressCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- p.serverFails
 	ch <- p.lastCrawled
 	ch <- p.disabled
+	ch <- p.robots
 }
 
 func (p *progressCollector) Collect(ch chan<- prometheus.Metric) {
@@ -187,6 +197,7 @@ func (p *progressCollector) Collect(ch chan<- prometheus.Metric) {
 	for _, state := range servers {
 		ch <- prometheus.MustNewConstMetric(p.serverFails, prometheus.GaugeValue, float64(state.FailCount), state.Domain)
 		ch <- prometheus.MustNewConstMetric(p.disabled, prometheus.GaugeValue, boolValue(state.Disabled), state.Domain)
+		ch <- prometheus.MustNewConstMetric(p.robots, prometheus.GaugeValue, boolValue(state.RobotsDisallowed), state.Domain)
 		if state.LastCrawledAt != nil {
 			ch <- prometheus.MustNewConstMetric(p.lastCrawled, prometheus.GaugeValue, float64(state.LastCrawledAt.Unix()), state.Domain)
 		}

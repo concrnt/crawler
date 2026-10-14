@@ -93,6 +93,26 @@ observability:
 - `activityHistoryDays`: `activityHistory` (日別の活動量) に持つ日数 (既定 30)。
 - `ackSchemas`: フォロー関係として取り込む ack の schema (既定 `ack/follow.json` のみ)。
 
+## robots.txt
+
+クロールされたくないサーバーのため、server ごとに `https://<domain>/robots.txt` を解釈します (RFC 9309)。
+クローラーの product token は `concrnt-crawler` で、User-Agent は `concrnt-crawler/<version> (Concrnt)` です。
+
+- 毎 run、replication を読む前に robots.txt を取得し、replication endpoint のパス (通常 `/api/v2/replication`) が
+  `concrnt-crawler` 向けの group (無ければ `*` の group) で許可されているかを見ます。許可されていなければその server は読まず、
+  `server_states.robots_disallowed` に記録します (`crawler_server_robots_disallowed{server}` が 1)。robots.txt が変われば次の run から再開します。
+- 手動クロール (`POST /api/v1/crawl/ccfs`) は resolve endpoint のパス (通常 `/resolve`) で判定し、拒否なら 403 相当のエラーを返します。
+- 404 など 4xx は「robots.txt なし」として全許可、5xx や接続失敗は「未定義」としてその run をスキップします (失敗には数えません)。
+- 判定は RFC 9309 の通りです: 一致する group の rule のうち最長一致が勝ち、同長なら Allow。`*` と末尾 `$` が使えます。
+  取得は先頭 500 KiB まで。
+
+concrnt サーバー側は config の `robotsTxt` に本文を書くと `/robots.txt` で返します。クロールを全面的に拒否するなら:
+
+```
+User-agent: concrnt-crawler
+Disallow: /
+```
+
 ## Community activity
 
 コミュニティ検索を「アクティブ順」に並べるため、投稿の着信量をクロール時に事前集計しています。
@@ -153,6 +173,7 @@ observability:
 | `crawler_replication_backoff{server}` | 失敗の backoff でスキップ中なら 1 |
 | `crawler_replication_consecutive_failures{server}` / `crawler_server_consecutive_failures{server}` | cursor / server に記録された連続失敗回数 |
 | `crawler_server_last_crawled_timestamp_seconds{server}` / `crawler_server_disabled{server}` | 最後にクロールした時刻 / クロール対象外なら 1 |
+| `crawler_server_robots_disallowed{server}` / `crawler_robots_requests_total{server,result}` | 直近の判定で robots.txt が replication を拒否していれば 1 / robots.txt 取得数 (`ok` = 本文か 4xx / `error` = 5xx・接続失敗で run をスキップ) |
 | `crawler_replication_requests_total{server,result}` | replication 要求数 (`ok` / `transient` = 429・503 / `error`) |
 | `crawler_replication_pages_total{server}` / `crawler_replication_commits_total{server,kind}` / `crawler_replication_malformed_total{server,kind}` | 適用したページ数 / 処理した commit 数 (`user` `community` `post` `entry` `delete` `ack` `ignored`) / 解釈できず捨てた commit 数 |
 | `crawler_crawl_runs_total{result}` / `crawler_crawl_run_duration_seconds` | 全 server を回す run の回数と所要時間 |

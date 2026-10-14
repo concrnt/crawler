@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/concrnt/concrnt-crawler/internal/search/meili"
 	"github.com/concrnt/concrnt-crawler/internal/search/model"
 	"github.com/concrnt/concrnt-crawler/internal/search/normalize"
+	"github.com/concrnt/concrnt-crawler/internal/search/robots"
 	"github.com/concrnt/concrnt/client"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -29,7 +31,14 @@ const (
 	KindPost      = "post"
 )
 
-const replicationEndpoint = "net.concrnt.core.replication"
+const (
+	replicationEndpoint = "net.concrnt.core.replication"
+	resolveEndpoint     = "net.concrnt.core.resolve"
+)
+
+// UserAgentProduct is the product token the crawler sends in its User-Agent
+// and the name a robots.txt group must carry to address it (RFC 9309 §2.2.1).
+const UserAgentProduct = "concrnt-crawler"
 
 // referenceSchema is the schema of the reference records a distribution
 // (CIP-7 §4.1) leaves under its destination.
@@ -187,7 +196,7 @@ func (c *Crawler) CrawlCCFS(ctx context.Context, ccfs string) (ManualCrawlResult
 		c.logger.Warn("failed to resolve ccfs source host", slog.String("ccfs", ccfs), slog.String("error", err.Error()))
 		sourceServer = parsed.Owner
 	}
-	if err := c.ensureSourceLayer(ctx, sourceServer); err != nil {
+	if err := c.ensureSourceAllowed(ctx, sourceServer); err != nil {
 		return ManualCrawlResult{}, err
 	}
 
@@ -448,6 +457,21 @@ func (c *Crawler) crawlServer(ctx context.Context, state model.ServerState) erro
 		c.logger.Warn("replication endpoint missing; skipping crawl", slog.String("server", wkc.Domain))
 		return nil
 	}
+	allowed, err := c.robotsAllow(ctx, wkc, replicationEndpoint)
+	if err != nil {
+		// an unreachable robots.txt is an undefined one, which means
+		// complete disallow (RFC 9309 §2.3.1.4); the next tick asks again,
+		// and it is not the server failing
+		c.logger.Warn("robots.txt unavailable; skipping crawl", slog.String("server", state.Domain), slog.String("error", err.Error()))
+		return nil
+	}
+	if err := c.db.WithContext(ctx).Model(&model.ServerState{}).Where("domain = ?", state.Domain).Updates(map[string]any{"robots_disallowed": !allowed, "robots_checked_at": now}).Error; err != nil {
+		return err
+	}
+	if !allowed {
+		c.logger.Info("crawl disallowed by robots.txt", slog.String("server", state.Domain))
+		return nil
+	}
 
 	cursor, err := c.getOrCreateReplicationCursor(ctx, state.Domain)
 	if err != nil {
@@ -516,18 +540,62 @@ func (c *Crawler) matchesLayer(wkc concrnt.WellKnownConcrnt) bool {
 	return c.cfg.Layer == "" || wkc.Layer == c.cfg.Layer
 }
 
-func (c *Crawler) ensureSourceLayer(ctx context.Context, sourceServer string) error {
-	if c.cfg.Layer == "" {
-		return nil
-	}
+func (c *Crawler) ensureSourceAllowed(ctx context.Context, sourceServer string) error {
 	wkc, err := c.client.GetServer(ctx, sourceServer, nil)
 	if err != nil {
-		return fmt.Errorf("get source server for layer check: %w", err)
+		return fmt.Errorf("get source server: %w", err)
 	}
 	if !c.matchesLayer(wkc) {
 		return fmt.Errorf("source server layer mismatch: got %q want %q", wkc.Layer, c.cfg.Layer)
 	}
+	// a manual crawl fetches the document through the resolve endpoint, so
+	// that is the path the server's robots.txt is asked about
+	allowed, err := c.robotsAllow(ctx, wkc, resolveEndpoint)
+	if err != nil {
+		return fmt.Errorf("source server robots.txt unavailable: %w", err)
+	}
+	if !allowed {
+		return fmt.Errorf("source server %s disallows crawling in robots.txt", sourceServer)
+	}
 	return nil
+}
+
+// robotsAllow fetches the server's robots.txt and reports whether it lets
+// the crawler use the named endpoint (its path without the query). No file
+// (4xx) allows everything; a 5xx or a failed request is an error, since the
+// file is then undefined rather than absent.
+func (c *Crawler) robotsAllow(ctx context.Context, wkc concrnt.WellKnownConcrnt, endpoint string) (bool, error) {
+	path := "/"
+	if tmpl, ok := wkc.Endpoints[endpoint]; ok {
+		rendered, err := concrnt.RenderURITemplate(tmpl, map[string]string{})
+		if err != nil {
+			return false, fmt.Errorf("render %s endpoint: %w", endpoint, err)
+		}
+		path, _, _ = strings.Cut(rendered, "?")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+wkc.Domain+"/robots.txt", nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Accept", "text/plain")
+	resp, err := c.client.GetClient().Do(req)
+	if err != nil {
+		robotsRequests.WithLabelValues(wkc.Domain, resultError).Inc()
+		return false, fmt.Errorf("request robots.txt: %w", err)
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		robotsRequests.WithLabelValues(wkc.Domain, resultOK).Inc()
+		return robots.Parse(resp.Body).Allowed(UserAgentProduct, path), nil
+	case resp.StatusCode >= 400 && resp.StatusCode < 500:
+		robotsRequests.WithLabelValues(wkc.Domain, resultOK).Inc()
+		return true, nil
+	default:
+		robotsRequests.WithLabelValues(wkc.Domain, resultError).Inc()
+		return false, fmt.Errorf("robots.txt %s failed: status %d", wkc.Domain, resp.StatusCode)
+	}
 }
 
 func (c *Crawler) getOrCreateReplicationCursor(ctx context.Context, serverDomain string) (model.ReplicationCursor, error) {
