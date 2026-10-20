@@ -51,14 +51,8 @@ func (s *fetchStore) Search(_ context.Context, indexUID string, query string, li
 		if query != "" && !strings.Contains(name, query) && !strings.Contains(username, query) {
 			continue
 		}
-		if filter != "" {
-			field, list, _ := strings.Cut(filter, " IN [")
-			negate := strings.HasSuffix(field, " NOT")
-			field = strings.TrimSuffix(field, " NOT")
-			value, _ := doc[field].(string)
-			if strings.Contains(list, `"`+value+`"`) == negate {
-				continue
-			}
+		if !matchesFilter(doc, filter) {
+			continue
 		}
 		copied := map[string]any{}
 		for k, v := range doc {
@@ -72,6 +66,24 @@ func (s *fetchStore) Search(_ context.Context, indexUID string, query string, li
 		hits[i] = doc
 	}
 	return &meilisearch.SearchResponse{Hits: hits, EstimatedTotalHits: int64(len(all))}, nil
+}
+
+// matchesFilter evaluates an AND of `field IN [..]` / `field NOT IN [..]`
+// atoms, the only shapes the handlers build, against one document.
+func matchesFilter(doc map[string]any, filter string) bool {
+	if filter == "" {
+		return true
+	}
+	for _, atom := range strings.Split(filter, " AND ") {
+		field, list, _ := strings.Cut(atom, " IN [")
+		negate := strings.HasSuffix(field, " NOT")
+		field = strings.TrimSuffix(field, " NOT")
+		value, _ := doc[field].(string)
+		if strings.Contains(list, `"`+value+`"`) == negate {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *fetchStore) Stats(context.Context) (*meilisearch.Stats, error) {
@@ -408,5 +420,86 @@ func TestFolloweeUsersKeyword(t *testing.T) {
 	_, body = get(t, h, "/api/v1/search/users?viewer="+viewer+"&q=work")
 	if got := hits(body); len(got) != 1 || got[0]["cckv"] != "cckv://"+alice+"/concrnt.world/profiles/work" {
 		t.Fatalf("unexpected hits: %+v", body)
+	}
+}
+
+// author: in viewer mode narrows both the ranked and the remaining matches,
+// and works without any text
+func TestFolloweeUsersKeywordAuthorTerm(t *testing.T) {
+	store := &fetchStore{docs: map[string][]map[string]any{
+		meili.UsersIndex: {userDoc(carol, "main"), userDoc(alice, "work"), userDoc(alice, "main"), userDoc(bob, "main")},
+	}}
+	h := newViewerHandler(t, store)
+	now := time.Now().UTC()
+	seedFollows(t, h, now)
+
+	// a followee: only her profiles, still carrying her rank
+	code, body := get(t, h, "/api/v1/search/users?viewer="+viewer+"&q=author:"+alice)
+	if code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	got := hits(body)
+	if len(got) != 2 || got[0]["ccid"] != alice || got[1]["ccid"] != alice || got[0]["followeePostCount30d"] != float64(1) {
+		t.Fatalf("unexpected hits: %+v", got)
+	}
+	if body["estimatedTotalHits"] != float64(2) || body["query"] != "author:"+alice {
+		t.Fatalf("unexpected envelope: %+v", body)
+	}
+	if authors := stringList(body, "filters", "author"); len(authors) != 1 || authors[0] != alice {
+		t.Fatalf("filters.author = %v", authors)
+	}
+	if len(store.filters) != 2 || !strings.HasSuffix(store.filters[0], ` AND ccid IN ["`+alice+`"]`) || !strings.HasSuffix(store.filters[1], ` AND ccid IN ["`+alice+`"]`) {
+		t.Fatalf("both searches must carry the term filter: %v", store.filters)
+	}
+
+	// someone not followed comes from the remaining matches, without rank fields
+	_, body = get(t, h, "/api/v1/search/users?viewer="+viewer+"&q=author:"+carol)
+	got = hits(body)
+	if len(got) != 1 || got[0]["ccid"] != carol {
+		t.Fatalf("unexpected hits: %+v", got)
+	}
+	if _, ok := got[0]["followeeScore"]; ok {
+		t.Fatalf("unranked hit must not carry followee fields: %+v", got[0])
+	}
+
+	// text and term combine
+	_, body = get(t, h, "/api/v1/search/users?viewer="+viewer+"&q=work+author:"+alice)
+	if got := hits(body); len(got) != 1 || got[0]["cckv"] != "cckv://"+alice+"/concrnt.world/profiles/work" {
+		t.Fatalf("unexpected hits: %+v", body)
+	}
+
+	// the ranked list without a query still carries filters (empty)
+	_, body = get(t, h, "/api/v1/search/users?viewer="+viewer)
+	if list, ok := body["filters"].(map[string]any)["author"].([]any); !ok || len(list) != 0 {
+		t.Fatalf("filters.author must be an empty array: %v", body["filters"])
+	}
+}
+
+func TestFolloweeCommunitiesKeywordAuthorTerm(t *testing.T) {
+	store := &fetchStore{docs: map[string][]map[string]any{
+		meili.CommunitiesIndex: {
+			{"cckv": quiet, "name": "quiet chat", "author": alice},
+			{"cckv": general, "name": "general chat", "author": bob},
+			{"cckv": "cckv://example.com/concrnt.world/communities/other", "name": "other chat", "author": alice},
+		},
+	}}
+	h := newViewerHandler(t, store)
+	now := time.Now().UTC()
+	seedFollows(t, h, now)
+
+	// alice's communities: the ranked one (quiet) first, then the rest
+	code, body := get(t, h, "/api/v1/search/communities?viewer="+viewer+"&q=chat+author:"+alice)
+	if code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	got := hits(body)
+	if len(got) != 2 || got[0]["cckv"] != quiet || got[1]["name"] != "other chat" {
+		t.Fatalf("unexpected hits: %+v", got)
+	}
+	if _, ok := got[0]["topAuthors"]; !ok {
+		t.Fatalf("ranked hit should carry the followee fields: %+v", got[0])
+	}
+	if authors := stringList(body, "filters", "author"); len(authors) != 1 || authors[0] != alice {
+		t.Fatalf("filters.author = %v", authors)
 	}
 }

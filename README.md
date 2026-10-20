@@ -206,15 +206,17 @@ GET /health
 GET /api/v1/search/users?q=alice&limit=20&offset=0&sourceServer=example.net&owner=con...
 ```
 
+`q` の中に `author:<CCID>` を書くと、そのユーザーのプロフィール (サブプロフィール含む) に絞り込めます。記法の規則は [Search Posts](#search-posts) と同じで、レスポンスの `filters` は `{"author": [...]}` です (`in:` は users / communities では通常の検索語です)。
+
 `sort` は `createdAt` / `indexedAt` / `username` に加えて `activityScore` / `postCount7d` / `postCount30d` / `lastPostAt` を受け付けます (未指定時は `createdAt:desc`)。hit には User activity の集計フィールドが (集計 tick 未到達の文書を除いて) 入ります。ユーザーとコミュニティの `createdAt` は、そのキーで最初に索引した record の `createdAt` (より古い `createdAt` の record が後から来た場合はそれ) を保持します。プロフィールの編集や、長期間オフラインだったサーバーのログ再生で新着扱いにはなりません。`indexedAt` は最後に索引した時刻です。
 
 ### Search Communities
 
 ```http
-GET /api/v1/search/communities?q=general&limit=20&offset=0&sourceServer=example.net&owner=example.net&sort=activityScore
+GET /api/v1/search/communities?q=general&limit=20&offset=0&sourceServer=example.net&owner=example.net&author=con...&sort=activityScore
 ```
 
-`cckv` を指定すると、そのコミュニティ 1 件を (活動量フィールドごと) 返します。
+`cckv` を指定すると、そのコミュニティ 1 件を (活動量フィールドごと) 返します。`author` は作成者 (record を commit した CCID) の完全一致で、`q` の中の `author:<CCID>` でも同じ絞り込みができます (規則は [Search Posts](#search-posts) と同じ・`filters` は `{"author": [...]}`)。既に稼働している環境へ入れる場合、索引済みのコミュニティには `author` が無く一致しません。`replication_cursors` を削除して再クロールしてください (互換処理はありません)。
 
 `sort` は `createdAt` / `indexedAt` / `name` に加えて `activityScore` / `postCount7d` / `postCount30d` / `activeAuthors7d` / `lastPostAt` を受け付けます (方向省略時は `desc`、未指定時は `createdAt:desc`)。`sort=activityScore` がアクティブ順です。
 
@@ -230,7 +232,8 @@ GET /api/v1/search/communities?viewer=con...&q=hello&limit=20&offset=0
 リクエスト時に順位付けします。スコアは `activityScore` と同じ式 (`2^(-経過時間/activityHalfLife)` の合計) で、同点は key の昇順です。
 `sort` は受け付けません (400)。`sourceServer` / `owner` / `cckv` は無視します。
 `q` を付けるとキーワード検索の並び順として働きます: 順位付けされた key のうち検索に一致した文書をスコア順に先頭へ並べ、
-その後ろに残りの一致文書を関連度順で続けます (フォロー先の活動が無い一致も落としません)。ページは両者をまたいで切り、
+その後ろに残りの一致文書を関連度順で続けます (フォロー先の活動が無い一致も落としません)。`q` の `author:<CCID>` は両方の一致に効き、
+検索語が無く `author:` だけでもこの経路になります。ページは両者をまたいで切り、
 `estimatedTotalHits` は「順位付け側の一致件数 + 残りの推定件数」です。users は `q` ありのとき一致したプロフィール文書を
 すべて hit にします (サブプロフィールが一致した場合はそれ自体が hit)。
 

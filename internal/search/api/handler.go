@@ -62,18 +62,21 @@ func (h *Handler) health(c echo.Context) error {
 }
 
 func (h *Handler) searchUsers(c echo.Context) error {
+	// `author:` terms in q become filters (see parseSearchQuery) and are
+	// ANDed with the plain filter params; the rest of q is the text query
+	parsed := parseSearchQuery(c.QueryParam("q"), userTerms)
 	if viewer := c.QueryParam("viewer"); viewer != "" {
-		return h.followeeUsers(c, viewer)
+		return h.followeeUsers(c, viewer, parsed)
 	}
-	filter := meili.BuildFilter(map[string]string{
+	filter := meili.JoinFilters(meili.BuildFilter(map[string]string{
 		"sourceServer": c.QueryParam("sourceServer"),
 		"owner":        c.QueryParam("owner"),
 	}, map[string]bool{
 		"sourceServer": true,
 		"owner":        true,
-	})
+	}), parsed.filter())
 	// sortable maps must stay in sync with the sortable attributes in meili.EnsureIndexes
-	return h.search(c, meili.UsersIndex, c.QueryParam("q"), filter, map[string]bool{
+	return h.search(c, meili.UsersIndex, parsed.Text, filter, map[string]bool{
 		"createdAt":     true,
 		"indexedAt":     true,
 		"username":      true,
@@ -81,24 +84,27 @@ func (h *Handler) searchUsers(c echo.Context) error {
 		"postCount7d":   true,
 		"postCount30d":  true,
 		"lastPostAt":    true,
-	}, "createdAt:desc", nil)
+	}, "createdAt:desc", map[string]any{"filters": parsed.echo()})
 }
 
 func (h *Handler) searchCommunities(c echo.Context) error {
+	parsed := parseSearchQuery(c.QueryParam("q"), communityTerms)
 	if viewer := c.QueryParam("viewer"); viewer != "" {
-		return h.followeeCommunities(c, viewer)
+		return h.followeeCommunities(c, viewer, parsed)
 	}
 	// cckv fetches one community by key (with its activity fields)
-	filter := meili.BuildFilter(map[string]string{
+	filter := meili.JoinFilters(meili.BuildFilter(map[string]string{
+		"author":       c.QueryParam("author"),
 		"sourceServer": c.QueryParam("sourceServer"),
 		"owner":        c.QueryParam("owner"),
 		"cckv":         c.QueryParam("cckv"),
 	}, map[string]bool{
+		"author":       true,
 		"sourceServer": true,
 		"owner":        true,
 		"cckv":         true,
-	})
-	return h.search(c, meili.CommunitiesIndex, c.QueryParam("q"), filter, map[string]bool{
+	}), parsed.filter())
+	return h.search(c, meili.CommunitiesIndex, parsed.Text, filter, map[string]bool{
 		"createdAt":       true,
 		"indexedAt":       true,
 		"name":            true,
@@ -107,7 +113,7 @@ func (h *Handler) searchCommunities(c echo.Context) error {
 		"postCount30d":    true,
 		"activeAuthors7d": true,
 		"lastPostAt":      true,
-	}, "createdAt:desc", nil)
+	}, "createdAt:desc", map[string]any{"filters": parsed.echo()})
 }
 
 func (h *Handler) searchServers(c echo.Context) error {
@@ -123,9 +129,7 @@ func (h *Handler) searchServers(c echo.Context) error {
 }
 
 func (h *Handler) searchPosts(c echo.Context) error {
-	// `author:` / `in:` terms in q become filters (see parsePostQuery) and are
-	// ANDed with the plain filter params; the rest of q is the text query
-	parsed := parsePostQuery(c.QueryParam("q"))
+	parsed := parseSearchQuery(c.QueryParam("q"), postTerms)
 	filter := meili.JoinFilters(meili.BuildFilter(map[string]string{
 		"author":       c.QueryParam("author"),
 		"sourceServer": c.QueryParam("sourceServer"),

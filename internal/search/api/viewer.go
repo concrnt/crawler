@@ -119,13 +119,14 @@ func topAuthors(counts map[string]int) []string {
 	return authors[:min(topAuthorsLimit, len(authors))]
 }
 
-func (h *Handler) viewerResponse(c echo.Context, hits []map[string]any, query string, limit int, offset int, total int, started time.Time) error {
+func (h *Handler) viewerResponse(c echo.Context, hits []map[string]any, parsed searchQuery, limit int, offset int, total int, started time.Time) error {
 	if hits == nil {
 		hits = []map[string]any{}
 	}
 	return c.JSON(http.StatusOK, map[string]any{
 		"hits":               hits,
-		"query":              query,
+		"query":              c.QueryParam("q"),
+		"filters":            parsed.echo(),
 		"limit":              limit,
 		"offset":             offset,
 		"estimatedTotalHits": total,
@@ -138,7 +139,10 @@ func (h *Handler) viewerResponse(c echo.Context, hits []map[string]any, query st
 // the remaining matches follow in relevance order, so a sort by followee
 // activity still lists every match. The page is cut across the two lists and
 // the total is the ranked matches plus Meilisearch's estimate of the rest.
-func (h *Handler) keywordSearch(c echo.Context, indexUID string, field string, query string, ranks []followeeRank, limit int, offset int, annotate func(doc map[string]any, rank followeeRank)) ([]map[string]any, int, error) {
+// The query's term filters (`author:`) apply to both lists.
+func (h *Handler) keywordSearch(c echo.Context, indexUID string, field string, parsed searchQuery, ranks []followeeRank, limit int, offset int, annotate func(doc map[string]any, rank followeeRank)) ([]map[string]any, int, error) {
+	query := parsed.Text
+	termFilter := parsed.filter()
 	ctx := c.Request().Context()
 	keys := make([]string, len(ranks))
 	byKey := make(map[string]int, len(ranks))
@@ -148,7 +152,7 @@ func (h *Handler) keywordSearch(c echo.Context, indexUID string, field string, q
 	}
 	var matched []map[string]any
 	if len(ranks) > 0 {
-		resp, err := h.store.Search(ctx, indexUID, query, keywordFetchLimit, 0, meili.InFilter(field, keys), nil)
+		resp, err := h.store.Search(ctx, indexUID, query, keywordFetchLimit, 0, meili.JoinFilters(meili.InFilter(field, keys), termFilter), nil)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -179,7 +183,7 @@ func (h *Handler) keywordSearch(c echo.Context, indexUID string, field string, q
 	restLimit := limit - len(page)
 	restOffset := max(0, offset-len(matched))
 	// NotInFilter of no keys is empty, so an unranked viewer gets plain relevance order
-	resp, err := h.store.Search(ctx, indexUID, query, int64(restLimit), int64(restOffset), meili.NotInFilter(field, keys), nil)
+	resp, err := h.store.Search(ctx, indexUID, query, int64(restLimit), int64(restOffset), meili.JoinFilters(meili.NotInFilter(field, keys), termFilter), nil)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -195,7 +199,7 @@ func (h *Handler) keywordSearch(c echo.Context, indexUID string, field string, q
 // followeeUsers ranks the viewer's followees by their own recent posts and
 // returns one profile document per CCID (the main profile when it is
 // indexed, else the first key) with followeeScore / followeePostCount30d.
-func (h *Handler) followeeUsers(c echo.Context, viewer string) error {
+func (h *Handler) followeeUsers(c echo.Context, viewer string, parsed searchQuery) error {
 	started := time.Now()
 	limit, offset, err := viewerWindow(c, viewer)
 	if err != nil {
@@ -222,21 +226,22 @@ func (h *Handler) followeeUsers(c echo.Context, viewer string) error {
 	for i, row := range rows {
 		entries[i] = followeeEntry{Key: row.Author, Author: row.Author, CreatedAt: row.CreatedAt}
 	}
-	if query := c.QueryParam("q"); query != "" {
+	// a text query or a term filter is a keyword search over the index
+	if parsed.Text != "" || parsed.filter() != "" {
 		// every matching profile document is a hit here (a subprofile can be what matched)
 		ranks, _ := rankFollowees(entries, now, h.halfLife, len(entries), 0)
-		hits, total, err := h.keywordSearch(c, meili.UsersIndex, "ccid", query, ranks, limit, offset, func(doc map[string]any, rank followeeRank) {
+		hits, total, err := h.keywordSearch(c, meili.UsersIndex, "ccid", parsed, ranks, limit, offset, func(doc map[string]any, rank followeeRank) {
 			doc["followeeScore"] = rank.Score
 			doc["followeePostCount30d"] = rank.Count
 		})
 		if err != nil {
 			return err
 		}
-		return h.viewerResponse(c, hits, query, limit, offset, total, started)
+		return h.viewerResponse(c, hits, parsed, limit, offset, total, started)
 	}
 	page, total := rankFollowees(entries, now, h.halfLife, limit, offset)
 	if len(page) == 0 {
-		return h.viewerResponse(c, nil, "", limit, offset, total, started)
+		return h.viewerResponse(c, nil, parsed, limit, offset, total, started)
 	}
 
 	ccids := make([]string, len(page))
@@ -276,13 +281,13 @@ func (h *Handler) followeeUsers(c echo.Context, viewer string) error {
 		doc["followeePostCount30d"] = rank.Count
 		hits = append(hits, doc)
 	}
-	return h.viewerResponse(c, hits, "", limit, offset, total, started)
+	return h.viewerResponse(c, hits, parsed, limit, offset, total, started)
 }
 
 // followeeCommunities ranks the indexed communities by the recent entries
 // the viewer's followees left there, naming the most active of them in
 // topAuthors.
-func (h *Handler) followeeCommunities(c echo.Context, viewer string) error {
+func (h *Handler) followeeCommunities(c echo.Context, viewer string, parsed searchQuery) error {
 	started := time.Now()
 	limit, offset, err := viewerWindow(c, viewer)
 	if err != nil {
@@ -308,9 +313,9 @@ func (h *Handler) followeeCommunities(c echo.Context, viewer string) error {
 	for i, row := range rows {
 		entries[i] = followeeEntry{Key: row.CommunityCCKV, Author: row.Author, CreatedAt: row.CreatedAt}
 	}
-	if query := c.QueryParam("q"); query != "" {
+	if parsed.Text != "" || parsed.filter() != "" {
 		ranks, _ := rankFollowees(entries, now, h.halfLife, len(entries), 0)
-		hits, total, err := h.keywordSearch(c, meili.CommunitiesIndex, "cckv", query, ranks, limit, offset, func(doc map[string]any, rank followeeRank) {
+		hits, total, err := h.keywordSearch(c, meili.CommunitiesIndex, "cckv", parsed, ranks, limit, offset, func(doc map[string]any, rank followeeRank) {
 			doc["followeeScore"] = rank.Score
 			doc["followeePostCount30d"] = rank.Count
 			doc["topAuthors"] = topAuthors(rank.Authors)
@@ -318,11 +323,11 @@ func (h *Handler) followeeCommunities(c echo.Context, viewer string) error {
 		if err != nil {
 			return err
 		}
-		return h.viewerResponse(c, hits, query, limit, offset, total, started)
+		return h.viewerResponse(c, hits, parsed, limit, offset, total, started)
 	}
 	page, total := rankFollowees(entries, now, h.halfLife, limit, offset)
 	if len(page) == 0 {
-		return h.viewerResponse(c, nil, "", limit, offset, total, started)
+		return h.viewerResponse(c, nil, parsed, limit, offset, total, started)
 	}
 
 	keys := make([]string, len(page))
@@ -349,5 +354,5 @@ func (h *Handler) followeeCommunities(c echo.Context, viewer string) error {
 		doc["topAuthors"] = topAuthors(rank.Authors)
 		hits = append(hits, doc)
 	}
-	return h.viewerResponse(c, hits, "", limit, offset, total, started)
+	return h.viewerResponse(c, hits, parsed, limit, offset, total, started)
 }

@@ -136,7 +136,7 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 		{
 			uid:        CommunitiesIndex,
 			searchable: []string{"name", "shortname", "description", "owner", "cckv", "sourceServer"},
-			filterable: []string{"owner", "sourceServer", "schema", "ancestors", "cckv"},
+			filterable: []string{"author", "owner", "sourceServer", "schema", "ancestors", "cckv"},
 			sortable:   []string{"createdAt", "indexedAt", "name", "activityScore", "postCount7d", "postCount30d", "activeAuthors7d", "lastPostAt"},
 		},
 		{

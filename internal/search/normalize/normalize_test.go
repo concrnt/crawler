@@ -96,7 +96,7 @@ func TestNormalizeCommunity(t *testing.T) {
 	if !ok {
 		t.Fatal("expected document to match schema")
 	}
-	if doc.Name != "General" || doc.Shortname != "general" || doc.Owner != "example.net" {
+	if doc.Name != "General" || doc.Shortname != "general" || doc.Owner != "example.net" || doc.Author != "con012345678901234567890123456789012345678" {
 		t.Fatalf("unexpected normalized community: %+v", doc)
 	}
 }

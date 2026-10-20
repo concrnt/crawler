@@ -72,10 +72,13 @@ type UserDocument struct {
 }
 
 type CommunityDocument struct {
-	ID           string    `json:"id"`
-	Type         string    `json:"type"`
-	CCKV         string    `json:"cckv"`
-	CCFS         string    `json:"ccfs,omitempty"`
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	CCKV string `json:"cckv"`
+	CCFS string `json:"ccfs,omitempty"`
+	// Author is the CCID that committed the community record (its creator);
+	// Owner is the domain the key lives under. `author:` filters on Author.
+	Author       string    `json:"author"`
 	Owner        string    `json:"owner"`
 	SourceServer string    `json:"sourceServer"`
 	Schema       string    `json:"schema"`
@@ -261,6 +264,7 @@ func NormalizeCommunity(sd concrnt.SignedDocument, expectedSchema string, source
 		Type:         "community",
 		CCKV:         parsed.CCKV,
 		CCFS:         parsed.CCFS,
+		Author:       parsed.Document.Author,
 		Owner:        parsed.Owner,
 		SourceServer: sourceServer,
 		Schema:       parsed.Document.Schema,
