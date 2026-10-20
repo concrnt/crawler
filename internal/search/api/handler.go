@@ -73,7 +73,7 @@ func (h *Handler) searchUsers(c echo.Context) error {
 		"owner":        true,
 	})
 	// sortable maps must stay in sync with the sortable attributes in meili.EnsureIndexes
-	return h.search(c, meili.UsersIndex, filter, map[string]bool{
+	return h.search(c, meili.UsersIndex, c.QueryParam("q"), filter, map[string]bool{
 		"createdAt":     true,
 		"indexedAt":     true,
 		"username":      true,
@@ -81,7 +81,7 @@ func (h *Handler) searchUsers(c echo.Context) error {
 		"postCount7d":   true,
 		"postCount30d":  true,
 		"lastPostAt":    true,
-	}, "createdAt:desc")
+	}, "createdAt:desc", nil)
 }
 
 func (h *Handler) searchCommunities(c echo.Context) error {
@@ -98,7 +98,7 @@ func (h *Handler) searchCommunities(c echo.Context) error {
 		"owner":        true,
 		"cckv":         true,
 	})
-	return h.search(c, meili.CommunitiesIndex, filter, map[string]bool{
+	return h.search(c, meili.CommunitiesIndex, c.QueryParam("q"), filter, map[string]bool{
 		"createdAt":       true,
 		"indexedAt":       true,
 		"name":            true,
@@ -107,7 +107,7 @@ func (h *Handler) searchCommunities(c echo.Context) error {
 		"postCount30d":    true,
 		"activeAuthors7d": true,
 		"lastPostAt":      true,
-	}, "createdAt:desc")
+	}, "createdAt:desc", nil)
 }
 
 func (h *Handler) searchServers(c echo.Context) error {
@@ -116,14 +116,17 @@ func (h *Handler) searchServers(c echo.Context) error {
 	}, map[string]bool{
 		"status": true,
 	})
-	return h.search(c, meili.ServersIndex, filter, map[string]bool{
+	return h.search(c, meili.ServersIndex, c.QueryParam("q"), filter, map[string]bool{
 		"lastSeenAt":    true,
 		"lastCrawledAt": true,
-	}, "")
+	}, "", nil)
 }
 
 func (h *Handler) searchPosts(c echo.Context) error {
-	filter := meili.BuildFilter(map[string]string{
+	// `author:` / `in:` terms in q become filters (see parsePostQuery) and are
+	// ANDed with the plain filter params; the rest of q is the text query
+	parsed := parsePostQuery(c.QueryParam("q"))
+	filter := meili.JoinFilters(meili.BuildFilter(map[string]string{
 		"author":       c.QueryParam("author"),
 		"sourceServer": c.QueryParam("sourceServer"),
 		"schema":       c.QueryParam("schema"),
@@ -131,14 +134,17 @@ func (h *Handler) searchPosts(c echo.Context) error {
 		"author":       true,
 		"sourceServer": true,
 		"schema":       true,
-	})
-	return h.search(c, meili.PostsIndex, filter, map[string]bool{
+	}), parsed.filter())
+	return h.search(c, meili.PostsIndex, parsed.Text, filter, map[string]bool{
 		"createdAt": true,
 		"indexedAt": true,
-	}, "createdAt:desc")
+	}, "createdAt:desc", map[string]any{"filters": parsed.echo()})
 }
 
-func (h *Handler) search(c echo.Context, indexUID string, filter string, sortable map[string]bool, defaultSort string) error {
+// search runs query against an index and writes the common response. query
+// is what goes to Meilisearch; the response's `query` is always the q param
+// as received. extra is merged into the response (nil for none).
+func (h *Handler) search(c echo.Context, indexUID string, query string, filter string, sortable map[string]bool, defaultSort string, extra map[string]any) error {
 	limit := parseInt(c.QueryParam("limit"), 20)
 	if limit < 1 {
 		limit = 20
@@ -150,7 +156,6 @@ func (h *Handler) search(c echo.Context, indexUID string, filter string, sortabl
 	if offset < 0 {
 		offset = 0
 	}
-	query := c.QueryParam("q")
 	sortParam := c.QueryParam("sort")
 	if sortParam == "" {
 		sortParam = defaultSort
@@ -164,14 +169,18 @@ func (h *Handler) search(c echo.Context, indexUID string, filter string, sortabl
 	if err != nil {
 		return err
 	}
-	return c.JSON(http.StatusOK, map[string]any{
+	body := map[string]any{
 		"hits":               resp.Hits,
-		"query":              query,
+		"query":              c.QueryParam("q"),
 		"limit":              limit,
 		"offset":             offset,
 		"estimatedTotalHits": resp.EstimatedTotalHits,
 		"processingTimeMs":   resp.ProcessingTimeMs,
-	})
+	}
+	for key, value := range extra {
+		body[key] = value
+	}
+	return c.JSON(http.StatusOK, body)
 }
 
 func (h *Handler) stats(c echo.Context) error {

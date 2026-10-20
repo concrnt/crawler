@@ -237,6 +237,25 @@ func TestNormalizePost(t *testing.T) {
 		t.Fatalf("unexpected ancestors: %v", post.Ancestors)
 	}
 
+	// no distributes: still a slice so the attribute exists in the index
+	if post.Timelines == nil || len(post.Timelines) != 0 {
+		t.Fatalf("timelines must be an empty slice, got %#v", post.Timelines)
+	}
+	if raw, err := json.Marshal(post); err != nil || !strings.Contains(string(raw), `"timelines":[]`) {
+		t.Fatalf("timelines must serialize as []: %s", raw)
+	}
+
+	// distributes become the timelines filter attribute, verbatim and in order
+	home := "cckv://con012345678901234567890123456789012345678/concrnt.world/profiles/main/home-timeline"
+	general := "cckv://example.com/concrnt.world/communities/general"
+	distributed, ok, err := NormalizePost(signedDocumentDistributed(t, cckv, postSchema, map[string]any{"body": "hi"}, createdAt, []string{home, "", general}), postSchema, "example.net", indexedAt)
+	if err != nil || !ok {
+		t.Fatalf("NormalizePost failed: ok=%v err=%v", ok, err)
+	}
+	if strings.Join(distributed.Timelines, ",") != home+","+general {
+		t.Fatalf("unexpected timelines: %v", distributed.Timelines)
+	}
+
 	// a bare reroute has no body but is still indexed for rendering
 	reroute, ok, err := NormalizePost(signedDocument(t, cckv, postSchema, map[string]any{"targetURI": "cckv://x/y"}, createdAt), postSchema, "example.net", indexedAt)
 	if err != nil || !ok || reroute.Body != "" {
@@ -247,6 +266,24 @@ func TestNormalizePost(t *testing.T) {
 	if _, ok, err := NormalizePost(signedDocumentOfKind(t, "delete", cckv, postSchema, createdAt), postSchema, "example.net", indexedAt); err != nil || ok {
 		t.Fatalf("non-record kind must not match: ok=%v err=%v", ok, err)
 	}
+}
+
+func signedDocumentDistributed(t *testing.T, key string, schema string, value any, createdAt time.Time, distributes []string) concrnt.SignedDocument {
+	t.Helper()
+	doc := concrnt.Document[any]{
+		Kind:        "record",
+		Key:         key,
+		Value:       value,
+		Author:      "con012345678901234567890123456789012345678",
+		Schema:      schema,
+		Distributes: &distributes,
+		CreatedAt:   createdAt,
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return concrnt.SignedDocument{Document: string(raw), Proof: concrnt.Proof{Type: concrnt.ProofTypeNone}}
 }
 
 func signedDocumentOfKind(t *testing.T, kind string, key string, schema string, createdAt time.Time) concrnt.SignedDocument {

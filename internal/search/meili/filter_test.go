@@ -103,3 +103,15 @@ func TestInFilter(t *testing.T) {
 		t.Fatalf("filter mismatch:\n got: %s\nwant: %s", got, want)
 	}
 }
+
+func TestJoinFilters(t *testing.T) {
+	if got := JoinFilters(); got != "" {
+		t.Fatalf("no parts: %q", got)
+	}
+	if got := JoinFilters("", `a = "1"`, ""); got != `a = "1"` {
+		t.Fatalf("single part: %q", got)
+	}
+	if got := JoinFilters(`a = "1"`, "", `b IN ["2"]`); got != `a = "1" AND b IN ["2"]` {
+		t.Fatalf("two parts: %q", got)
+	}
+}

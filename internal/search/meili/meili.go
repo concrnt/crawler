@@ -148,7 +148,7 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 		{
 			uid:        PostsIndex,
 			searchable: []string{"body", "author", "cckv", "sourceServer"},
-			filterable: []string{"author", "owner", "sourceServer", "schema", "ancestors"},
+			filterable: []string{"author", "owner", "sourceServer", "schema", "ancestors", "timelines"},
 			sortable:   []string{"createdAt", "indexedAt"},
 		},
 	}
@@ -454,6 +454,18 @@ func InFilter(field string, values []string) string {
 		quoted[i] = "\"" + escapeFilterValue(value) + "\""
 	}
 	return field + " IN [" + strings.Join(quoted, ", ") + "]"
+}
+
+// JoinFilters ANDs filter expressions, dropping empty ones. Every helper here
+// yields a single atom, so no parentheses are needed.
+func JoinFilters(parts ...string) string {
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, " AND ")
 }
 
 // NotInFilter builds a `field NOT IN ["a", "b"]` filter, the complement of

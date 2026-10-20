@@ -106,7 +106,7 @@ observability:
 - 判定は RFC 9309 の通りです: 一致する group の rule のうち最長一致が勝ち、同長なら Allow。`*` と末尾 `$` が使えます。
   取得は先頭 500 KiB まで。
 
-concrnt サーバー側は config の `robotsTxt` に本文を書くと `/robots.txt` で返します。クロールを全面的に拒否するなら:
+concrnt サーバー側は `/etc/concrnt/static/robots.txt` (config `static.robotsTxt` でパス変更可) を `/robots.txt` で返します。クロールを全面的に拒否するなら:
 
 ```
 User-agent: concrnt-crawler
@@ -247,6 +247,19 @@ GET /api/v1/search/posts?q=hello&limit=20&offset=0&author=con...&sourceServer=ex
 ```
 
 `sort` 未指定時は `createdAt:desc` です。hit には `body` のほか record の `value` 全体が入ります。
+
+`q` の中に `author:<CCID>` / `in:<タイムラインの cckv URI>` を書くと、投稿者 / 投稿先タイムラインで絞り込めます (空白区切り・キーは大文字小文字を区別しません・値は完全一致)。
+
+```http
+GET /api/v1/search/posts?q=hello%20author:con...%20in:cckv://example.com/concrnt.world/communities/general
+```
+
+- 同じキーを複数書くと OR、異なるキー同士および `author=` / `sourceServer=` / `schema=` パラメータとは AND です。
+- 残りの語が全文検索語になります。`q=author:con...` だけなら、その人の投稿を新しい順に一覧します。
+- `in:` は record の `distributes` (配送先) を索引した `timelines` 属性で照合します。ユーザーのホームタイムラインでもコミュニティでも指定できます。
+- レスポンスの `query` は受け取った `q` そのまま、`filters` に解釈した語が入ります (`{"author": [...], "in": [...]}`、無ければ空配列)。
+- 引用符・空白を含む値・`(author:...)` のような他の文字と連結した形・全角コロン・値が空の `author:` は記法として扱わず、通常の検索語になります。
+- 既に稼働している環境へ入れる場合、索引済みの投稿には `timelines` が無く `in:` に一致しません。`replication_cursors` を削除して再クロールしてください (互換処理はありません)。
 
 ### Search Servers
 

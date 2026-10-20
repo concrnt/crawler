@@ -115,6 +115,9 @@ func TestCrawlCCFSIndexesPost(t *testing.T) {
 	if len(store.posts) != 1 || store.posts[0].Body != "hello world" {
 		t.Fatalf("expected one post upsert with body, got %+v", store.posts)
 	}
+	if store.posts[0].Timelines == nil {
+		t.Fatalf("timelines must never be null in the index: %+v", store.posts[0])
+	}
 }
 
 // manualStore records every store call in order so tests can assert that

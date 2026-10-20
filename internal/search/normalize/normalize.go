@@ -103,8 +103,12 @@ type PostDocument struct {
 	Body         string          `json:"body"`
 	Value        json.RawMessage `json:"value"`
 	Ancestors    []string        `json:"ancestors"`
-	CreatedAt    time.Time       `json:"createdAt"`
-	IndexedAt    time.Time       `json:"indexedAt"`
+	// Timelines are the destination timeline keys of the record (its
+	// `distributes`), what `in:<timeline>` filters on. Always a slice, never
+	// null, so the attribute exists on every document.
+	Timelines []string  `json:"timelines"`
+	CreatedAt time.Time `json:"createdAt"`
+	IndexedAt time.Time `json:"indexedAt"`
 }
 
 type ParsedDocument struct {
@@ -284,6 +288,17 @@ func NormalizePost(sd concrnt.SignedDocument, expectedSchema string, sourceServe
 		return PostDocument{}, false, fmt.Errorf("decode post value: %w", err)
 	}
 
+	// destination keys are kept verbatim: they are matched exactly, like every
+	// other key field in the index
+	timelines := []string{}
+	if parsed.Document.Distributes != nil {
+		for _, uri := range *parsed.Document.Distributes {
+			if uri != "" {
+				timelines = append(timelines, uri)
+			}
+		}
+	}
+
 	return PostDocument{
 		ID:           parsed.ID,
 		Type:         "post",
@@ -296,6 +311,7 @@ func NormalizePost(sd concrnt.SignedDocument, expectedSchema string, sourceServe
 		Body:         value.Body,
 		Value:        parsed.Document.Value,
 		Ancestors:    parsed.Ancestors,
+		Timelines:    timelines,
 		CreatedAt:    parsed.Document.CreatedAt,
 		IndexedAt:    indexedAt,
 	}, true, nil
