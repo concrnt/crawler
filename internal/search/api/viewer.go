@@ -156,11 +156,11 @@ func (h *Handler) keywordSearch(c echo.Context, indexUID string, field string, p
 		if err != nil {
 			return nil, 0, err
 		}
-		for _, hit := range resp.Hits {
-			doc, ok := hit.(map[string]any)
-			if !ok {
-				continue
-			}
+		docs, err := meili.DecodeHits(resp.Hits)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, doc := range docs {
 			key, _ := doc[field].(string)
 			if _, ok := byKey[key]; !ok {
 				continue
@@ -187,12 +187,11 @@ func (h *Handler) keywordSearch(c echo.Context, indexUID string, field string, p
 	if err != nil {
 		return nil, 0, err
 	}
-	hits := append([]map[string]any{}, page...)
-	for _, hit := range resp.Hits {
-		if doc, ok := hit.(map[string]any); ok {
-			hits = append(hits, doc)
-		}
+	rest, err := meili.DecodeHits(resp.Hits)
+	if err != nil {
+		return nil, 0, err
 	}
+	hits := append(append([]map[string]any{}, page...), rest...)
 	return hits, len(matched) + int(resp.EstimatedTotalHits), nil
 }
 

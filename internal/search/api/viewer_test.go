@@ -61,9 +61,16 @@ func (s *fetchStore) Search(_ context.Context, indexUID string, query string, li
 		all = append(all, copied)
 	}
 	page := all[min(int(offset), len(all)):min(int(offset+limit), len(all))]
-	hits := make([]any, len(page))
+	hits := make(meilisearch.Hits, len(page))
 	for i, doc := range page {
-		hits[i] = doc
+		hits[i] = meilisearch.Hit{}
+		for k, v := range doc {
+			raw, err := json.Marshal(v)
+			if err != nil {
+				return nil, err
+			}
+			hits[i][k] = raw
+		}
 	}
 	return &meilisearch.SearchResponse{Hits: hits, EstimatedTotalHits: int64(len(all))}, nil
 }
