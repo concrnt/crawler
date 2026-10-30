@@ -18,7 +18,7 @@ type captureStore struct {
 
 func (s *captureStore) Search(_ context.Context, indexUID string, query string, _ int64, _ int64, filter string, sort []string) (*meilisearch.SearchResponse, error) {
 	s.index, s.query, s.filter, s.sort = indexUID, query, filter, sort
-	return &meilisearch.SearchResponse{Hits: []any{}}, nil
+	return &meilisearch.SearchResponse{Hits: meilisearch.Hits{}}, nil
 }
 
 func (s *captureStore) FetchDocuments(context.Context, string, string, int64) ([]map[string]any, error) {

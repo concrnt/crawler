@@ -96,6 +96,8 @@ type UserActivityDocument struct {
 	ActivityHistory []UserActivityDay `json:"activityHistory"`
 }
 
+var primaryKeyID = &meilisearch.DocumentOptions{PrimaryKey: meilisearch.StringPtr("id")}
+
 type Store struct {
 	client      meilisearch.ServiceManager
 	taskTimeout time.Duration
@@ -162,7 +164,11 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 		if err := s.waitTask(ctx, task, err); err != nil {
 			return fmt.Errorf("update searchable attributes for %s: %w", spec.uid, err)
 		}
-		task, err = index.UpdateFilterableAttributesWithContext(ctx, &spec.filterable)
+		filterable := make([]interface{}, len(spec.filterable))
+		for i, attr := range spec.filterable {
+			filterable[i] = attr
+		}
+		task, err = index.UpdateFilterableAttributesWithContext(ctx, &filterable)
 		if err := s.waitTask(ctx, task, err); err != nil {
 			return fmt.Errorf("update filterable attributes for %s: %w", spec.uid, err)
 		}
@@ -194,7 +200,7 @@ func (s *Store) UpsertServers(ctx context.Context, docs []ServerDocument) error 
 	}
 	defer prometheus.NewTimer(meiliWriteDuration.WithLabelValues("servers")).ObserveDuration()
 	index := s.client.Index(ServersIndex)
-	task, err := index.AddDocumentsWithContext(ctx, docs, "id")
+	task, err := index.AddDocumentsWithContext(ctx, docs, primaryKeyID)
 	return s.waitTask(ctx, task, err)
 }
 
@@ -221,7 +227,7 @@ func (s *Store) UpsertUsers(ctx context.Context, docs []normalize.UserDocument) 
 		docs[i].CreatedAt = earliestCreatedAt(existing, docs[i].ID, docs[i].CreatedAt)
 	}
 	index := s.client.Index(UsersIndex)
-	task, err := index.UpdateDocumentsWithContext(ctx, docs, "id")
+	task, err := index.UpdateDocumentsWithContext(ctx, docs, primaryKeyID)
 	return s.waitTask(ctx, task, err)
 }
 
@@ -247,7 +253,7 @@ func (s *Store) UpsertCommunities(ctx context.Context, docs []normalize.Communit
 		docs[i].CreatedAt = earliestCreatedAt(existing, docs[i].ID, docs[i].CreatedAt)
 	}
 	index := s.client.Index(CommunitiesIndex)
-	task, err := index.UpdateDocumentsWithContext(ctx, docs, "id")
+	task, err := index.UpdateDocumentsWithContext(ctx, docs, primaryKeyID)
 	return s.waitTask(ctx, task, err)
 }
 
@@ -260,7 +266,7 @@ func (s *Store) UpdateCommunityActivity(ctx context.Context, docs []CommunityAct
 	}
 	defer prometheus.NewTimer(meiliWriteDuration.WithLabelValues("activity")).ObserveDuration()
 	index := s.client.Index(CommunitiesIndex)
-	task, err := index.UpdateDocumentsWithContext(ctx, docs, "id")
+	task, err := index.UpdateDocumentsWithContext(ctx, docs, primaryKeyID)
 	return s.waitTask(ctx, task, err)
 }
 
@@ -311,7 +317,7 @@ func (s *Store) UpdateUserActivity(ctx context.Context, docs []UserActivityDocum
 	}
 	defer prometheus.NewTimer(meiliWriteDuration.WithLabelValues("activity")).ObserveDuration()
 	index := s.client.Index(UsersIndex)
-	task, err := index.UpdateDocumentsWithContext(ctx, docs, "id")
+	task, err := index.UpdateDocumentsWithContext(ctx, docs, primaryKeyID)
 	return s.waitTask(ctx, task, err)
 }
 
@@ -321,7 +327,7 @@ func (s *Store) UpsertPosts(ctx context.Context, docs []normalize.PostDocument) 
 	}
 	defer prometheus.NewTimer(meiliWriteDuration.WithLabelValues("posts")).ObserveDuration()
 	index := s.client.Index(PostsIndex)
-	task, err := index.AddDocumentsWithContext(ctx, docs, "id")
+	task, err := index.AddDocumentsWithContext(ctx, docs, primaryKeyID)
 	return s.waitTask(ctx, task, err)
 }
 
@@ -331,13 +337,13 @@ func (s *Store) DeleteRecords(ctx context.Context, indexUID string, spec DeleteS
 	defer prometheus.NewTimer(meiliWriteDuration.WithLabelValues("delete")).ObserveDuration()
 	index := s.client.Index(indexUID)
 	if len(spec.IDs) > 0 {
-		task, err := index.DeleteDocumentsWithContext(ctx, spec.IDs)
+		task, err := index.DeleteDocumentsWithContext(ctx, spec.IDs, nil)
 		if err := s.waitTask(ctx, task, err); err != nil {
 			return err
 		}
 	}
 	if spec.Ancestor != "" {
-		task, err := index.DeleteDocumentsByFilterWithContext(ctx, fmt.Sprintf("ancestors = \"%s\"", escapeFilterValue(spec.Ancestor)))
+		task, err := index.DeleteDocumentsByFilterWithContext(ctx, fmt.Sprintf("ancestors = \"%s\"", escapeFilterValue(spec.Ancestor)), nil)
 		if err := s.waitTask(ctx, task, err); err != nil {
 			return err
 		}
@@ -367,11 +373,20 @@ func (s *Store) FetchDocuments(ctx context.Context, indexUID string, filter stri
 	if err := s.client.Index(indexUID).GetDocumentsWithContext(ctx, &meilisearch.DocumentsQuery{Filter: filter, Limit: limit}, &result); err != nil {
 		return nil, err
 	}
-	return result.Results, nil
+	return DecodeHits(result.Results)
+}
+
+// DecodeHits decodes Meilisearch hits into plain documents.
+func DecodeHits(hits meilisearch.Hits) ([]map[string]any, error) {
+	docs := []map[string]any{}
+	if err := hits.DecodeInto(&docs); err != nil {
+		return nil, err
+	}
+	return docs, nil
 }
 
 func (s *Store) Stats(ctx context.Context) (*meilisearch.Stats, error) {
-	return s.client.GetStatsWithContext(ctx)
+	return s.client.GetStatsWithContext(ctx, nil)
 }
 
 func (s *Store) waitTask(ctx context.Context, task *meilisearch.TaskInfo, err error) error {
