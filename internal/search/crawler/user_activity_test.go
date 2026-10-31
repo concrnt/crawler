@@ -14,7 +14,7 @@ import (
 	"github.com/concrnt/concrnt-crawler/internal/search/normalize"
 )
 
-const (
+var (
 	mainProfile = "cckv://" + testAuthor + "/concrnt.world/profiles/main"
 	subProfile  = "cckv://" + testAuthor + "/concrnt.world/profiles/work"
 )

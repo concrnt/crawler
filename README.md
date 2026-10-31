@@ -12,7 +12,7 @@ Seed Concrnt server から known servers を取得し、各 server の `net.conc
 既知の制約:
 
 - 公開判定は索引時点です。索引後に非公開化された record は残ります。
-- proof の検証は行いません (server が返した record をそのまま信頼します)。
+- proof は検証し、検証に失敗した record は索引しません。`none` proof (v1 からの移行など、server が import した署名のない record) も索引対象外です。索引済みの record は再検証しません。
 - 同じ key を別 schema で上書きしても、他の索引に入った document は消えません。
 
 ## Run

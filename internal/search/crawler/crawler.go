@@ -212,6 +212,9 @@ func (c *Crawler) CrawlCCFS(ctx context.Context, ccfs string) (ManualCrawlResult
 	if err := json.Unmarshal([]byte(sd.Document), &doc); err != nil {
 		return ManualCrawlResult{}, fmt.Errorf("decode signed document: %w", err)
 	}
+	if reason, err := c.verifyDocument(ctx, sd, doc); reason != "" {
+		return ManualCrawlResult{}, fmt.Errorf("signature verification failed (%s): %w", reason, err)
+	}
 
 	for _, schema := range c.cfg.ProfileSchemas {
 		if doc.Schema != schema {
@@ -847,6 +850,11 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 			replicationMalformed.WithLabelValues(sourceServer, "commit").Inc()
 			continue
 		}
+		if reason, err := c.verifyDocument(ctx, sd, doc); reason != "" {
+			c.logger.Debug("skipping unverified commit", slog.String("server", sourceServer), slog.String("kind", doc.Kind), slog.String("key", doc.Key), slog.String("reason", reason), slog.String("error", err.Error()))
+			replicationRejected.WithLabelValues(sourceServer, reason).Inc()
+			continue
+		}
 		switch doc.Kind {
 		case "record":
 			// any record landing directly under a community key is activity
@@ -969,6 +977,53 @@ func (c *Crawler) applyPage(ctx context.Context, sourceServer string, items []co
 		}
 	}
 	return latestPost, flush()
+}
+
+// Rejection reasons reported by verifyDocument, used as the reason label of
+// replicationRejected.
+const (
+	rejectNoneProof     = "none_proof"
+	rejectSignature     = "signature"
+	rejectProofType     = "proof_type"
+	rejectOwnerMismatch = "owner_mismatch"
+	rejectResolve       = "resolve"
+)
+
+// verifyDocument checks that sd is what it claims to be before it is
+// indexed: the proof must verify against the author (through the client,
+// which fetches subkey enact documents and referenced documents from their
+// authoritative servers), acked/unacked documents must carry the
+// document-direct proof a server derives them with (CIP-10 §5.2, otherwise
+// anyone could author the target side of an ack), and a profile under a
+// CCID-owned key must be authored by that CCID, since the index attributes
+// it to the key owner. Unsigned (none) proofs are rejected outright: those
+// are server imports (v1 migrations) and nothing vouches for them off their
+// origin. The returned reason is "" when the document is accepted.
+func (c *Crawler) verifyDocument(ctx context.Context, sd concrnt.SignedDocument, doc concrnt.Document[json.RawMessage]) (string, error) {
+	if sd.Proof.Type == concrnt.ProofTypeNone {
+		return rejectNoneProof, concrnt.ErrNoneProofNotAllowed
+	}
+	var allowed []string
+	if doc.Kind == "acked" || doc.Kind == "unacked" {
+		allowed = []string{concrnt.ProofTypeDocumentDirect}
+	}
+	if err := sd.VerifyWithProofTypes(ctx, c.client, allowed); err != nil {
+		switch {
+		case errors.Is(err, concrnt.ErrSignatureVerificationFailed):
+			return rejectSignature, err
+		case errors.Is(err, concrnt.ErrUnsupportedProofType), errors.Is(err, concrnt.ErrProofTypeNotAllowed), errors.Is(err, concrnt.ErrNoneProofNotAllowed):
+			return rejectProofType, err
+		default:
+			return rejectResolve, err
+		}
+	}
+	if doc.Kind == "record" && slices.Contains(c.cfg.ProfileSchemas, doc.Schema) {
+		parsed, err := concrnt.ParseCCURI(doc.Key)
+		if err == nil && concrnt.IsCCID(parsed.Owner) && parsed.Owner != doc.Author {
+			return rejectOwnerMismatch, fmt.Errorf("profile under %s is authored by %s", parsed.Owner, doc.Author)
+		}
+	}
+	return "", nil
 }
 
 // ackTarget returns the ackee of an ack-kind document: the owner of its

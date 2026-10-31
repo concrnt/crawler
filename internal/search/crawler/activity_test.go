@@ -2,7 +2,6 @@ package crawler
 
 import (
 	"context"
-	"encoding/json"
 	"math"
 	"slices"
 	"strings"
@@ -17,10 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-const (
-	general     = "cckv://example.com/concrnt.world/communities/general"
-	otherAuthor = "con098765432109876543210987654321098765432"
-)
+const general = "cckv://example.com/concrnt.world/communities/general"
 
 func TestCommunityParent(t *testing.T) {
 	cases := []struct {
@@ -115,18 +111,7 @@ func TestApplyPageRecordsEntriesUnderIndexedCommunities(t *testing.T) {
 
 	// a re-commit of ref1 (an edit: same key, later createdAt) refreshes the
 	// row but not created_at, so the edit is not counted as new activity
-	recommit := ref(general + "/ref1")
-	var edited concrnt.Document[map[string]string]
-	if err := json.Unmarshal([]byte(recommit.Document), &edited); err != nil {
-		t.Fatal(err)
-	}
-	edited.CreatedAt = t0.Add(48 * time.Hour)
-	edited.Author = otherAuthor
-	raw, err := json.Marshal(edited)
-	if err != nil {
-		t.Fatal(err)
-	}
-	recommit.Document = string(raw)
+	recommit := commitAt(t, bob, "record", general+"/ref1", referenceSchema, map[string]string{"href": postsParent + "/ref1"}, "", t0.Add(48*time.Hour))
 	if _, err := c.applyPage(ctx, replicationDomain, []concrnt.SignedDocument{recommit}); err != nil {
 		t.Fatal(err)
 	}

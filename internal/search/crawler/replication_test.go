@@ -2,9 +2,9 @@ package crawler
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +13,7 @@ import (
 	"github.com/concrnt/concrnt-crawler/internal/search/config"
 	"github.com/concrnt/concrnt-crawler/internal/search/database"
 	"github.com/concrnt/concrnt-crawler/internal/search/model"
+	"github.com/concrnt/concrnt-crawler/internal/search/sigtest"
 	"github.com/concrnt/concrnt/client"
 	"github.com/glebarez/sqlite"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -20,10 +21,16 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-const (
-	replicationDomain = "replication.test"
-	testAuthor        = "con012345678901234567890123456789012345678"
-	postsParent       = "cckv://" + testAuthor + "/concrnt.world/profiles/main/posts"
+const replicationDomain = "replication.test"
+
+// alice authors most fixtures; bob is the other party where a second
+// identity is needed. Fixed keys keep the CCIDs stable across runs.
+var (
+	alice       = sigtest.MustIdentity(strings.Repeat("11", 32))
+	bob         = sigtest.MustIdentity(strings.Repeat("22", 32))
+	testAuthor  = alice.CCID
+	otherAuthor = bob.CCID
+	postsParent = "cckv://" + testAuthor + "/concrnt.world/profiles/main/posts"
 )
 
 var (
@@ -33,13 +40,18 @@ var (
 )
 
 // replicationServer stubs a concrnt server: the well-known advertises the
-// replication endpoint and each page is keyed by the since parameter the
-// crawler is expected to send ("" for the first page of a fresh cursor).
+// replication and resolve endpoints, each page is keyed by the since
+// parameter the crawler is expected to send ("" for the first page of a
+// fresh cursor) and resources are the signed documents served by uri from
+// /resolve (entity records and subkey enact documents fetched during
+// verification), with every resolved uri recorded in resolves.
 type replicationServer struct {
-	t        *testing.T
-	pages    map[string]concrnt.QueryResult
-	status   int
-	requests []string
+	t         *testing.T
+	pages     map[string]concrnt.QueryResult
+	status    int
+	requests  []string
+	resources map[string]concrnt.SignedDocument
+	resolves  []string
 	// robots is served as /robots.txt; robotsStatus, when set, replaces the
 	// file with an empty response of that status. Neither set: 404, no file
 	robots       string
@@ -61,8 +73,20 @@ func (s *replicationServer) RoundTrip(r *http.Request) (*http.Response, error) {
 			Domain: replicationDomain,
 			Endpoints: map[string]string{
 				replicationEndpoint: "/api/v2/replication{?owner,since,until,limit,order}",
+				resolveEndpoint:     "/resolve?uri={uri}",
 			},
 		})
+	case "/resolve":
+		uri, err := url.QueryUnescape(r.URL.Query().Get("uri"))
+		if err != nil {
+			s.t.Fatal(err)
+		}
+		s.resolves = append(s.resolves, uri)
+		sd, ok := s.resources[uri]
+		if !ok {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found")), Header: make(http.Header)}, nil
+		}
+		return jsonResponse(s.t, sd)
 	case "/api/v2/replication":
 		s.requests = append(s.requests, r.URL.RawQuery)
 		if s.status != 0 {
@@ -111,21 +135,25 @@ func stamp(ts time.Time) string {
 	return ts.UTC().Format(time.RFC3339Nano)
 }
 
+// commit is an alice-authored, alice-signed commit at t0.
 func commit(t *testing.T, kind string, key string, schema string, value any, ccfs string) concrnt.SignedDocument {
 	t.Helper()
-	doc := concrnt.Document[any]{
+	return commitAt(t, alice, kind, key, schema, value, ccfs, t0)
+}
+
+// commitAt builds a commit authored and ecrecover-signed by id.
+func commitAt(t *testing.T, id sigtest.Identity, kind string, key string, schema string, value any, ccfs string, createdAt time.Time) concrnt.SignedDocument {
+	t.Helper()
+	sd := id.Sign(t, concrnt.Document[any]{
 		Kind:      kind,
 		Key:       key,
 		Value:     value,
-		Author:    testAuthor,
+		Author:    id.CCID,
 		Schema:    schema,
-		CreatedAt: t0,
-	}
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return concrnt.SignedDocument{CCFS: &ccfs, Document: string(raw), Proof: concrnt.Proof{Type: concrnt.ProofTypeNone}}
+		CreatedAt: createdAt,
+	})
+	sd.CCFS = &ccfs
+	return sd
 }
 
 func loadCursor(t *testing.T, c *Crawler) model.ReplicationCursor {
@@ -150,6 +178,9 @@ func TestCrawlServerAppliesCommitsInLogOrder(t *testing.T) {
 				commit(t, "entity", "cckv://"+testAuthor, "https://schema.concrnt.net/entity.json", map[string]string{"domain": replicationDomain}, "ccfs://a/concrnt/4"),
 				commit(t, "association", "", "https://schema.concrnt.world/a/like.json", map[string]string{}, "ccfs://a/concrnt/5"),
 				{Document: "{not json", Proof: concrnt.Proof{Type: concrnt.ProofTypeNone}},
+				// an unsigned (v1 import) and a tampered commit are skipped, not counted as malformed
+				sigtest.NoneProof(t, concrnt.Document[any]{Kind: "record", Key: post1, Value: map[string]string{"body": "unsigned"}, Author: testAuthor, Schema: config.DefaultPostSchemas[0], CreatedAt: t0}),
+				sigtest.Tamper(t, commit(t, "record", post1, config.DefaultPostSchemas[0], map[string]string{"body": "first"}, "ccfs://a/concrnt/1x"), `"body":"first"`, `"body":"forged"`),
 				commit(t, "record", post1, config.DefaultPostSchemas[0], map[string]string{"body": "second"}, "ccfs://a/concrnt/6"),
 				commit(t, "record", postsParent+"/list", "https://schema.concrnt.world/s/list.json", map[string]string{"name": "ignored"}, "ccfs://a/concrnt/7"),
 			},
@@ -214,6 +245,11 @@ func TestCrawlServerAppliesCommitsInLogOrder(t *testing.T) {
 			t.Errorf("malformed_total{kind=%q} = %v, want %v", kind, got, want)
 		}
 	}
+	for reason, want := range map[string]float64{rejectNoneProof: 1, rejectSignature: 1} {
+		if got := testutil.ToFloat64(replicationRejected.WithLabelValues(replicationDomain, reason)); got != want {
+			t.Errorf("rejected_total{reason=%q} = %v, want %v", reason, got, want)
+		}
+	}
 	if got := testutil.ToFloat64(replicationRequests.WithLabelValues(replicationDomain, resultOK)); got != 2 {
 		t.Errorf("requests_total{result=ok} = %v, want 2", got)
 	}
@@ -232,6 +268,7 @@ func resetCounters() {
 	replicationPages.Reset()
 	replicationCommits.Reset()
 	replicationMalformed.Reset()
+	replicationRejected.Reset()
 	serverCrawls.Reset()
 	robotsRequests.Reset()
 }
@@ -270,12 +307,7 @@ func TestReplicateResumesBehindCursorAndContinuesPastEmptyPages(t *testing.T) {
 
 func TestReplicateKeepsNewestPostTimestamp(t *testing.T) {
 	postAt := func(key string, createdAt time.Time) concrnt.SignedDocument {
-		raw, err := json.Marshal(concrnt.Document[any]{Kind: "record", Key: key, Value: map[string]string{"body": key}, Author: testAuthor, Schema: config.DefaultPostSchemas[0], CreatedAt: createdAt})
-		if err != nil {
-			t.Fatal(err)
-		}
-		ccfs := "ccfs://a/concrnt/" + key
-		return concrnt.SignedDocument{CCFS: &ccfs, Document: string(raw), Proof: concrnt.Proof{Type: concrnt.ProofTypeNone}}
+		return commitAt(t, alice, "record", key, config.DefaultPostSchemas[0], map[string]string{"body": key}, "ccfs://a/concrnt/"+key, createdAt)
 	}
 	server := &replicationServer{t: t, pages: map[string]concrnt.QueryResult{
 		"": {

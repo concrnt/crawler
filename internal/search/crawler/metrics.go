@@ -49,6 +49,13 @@ var (
 		Help:      "Commits skipped because they could not be decoded, by server and kind (commit, profile, community, post, delete, ack).",
 	}, []string{"server", "kind"})
 
+	replicationRejected = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "crawler",
+		Subsystem: "replication",
+		Name:      "rejected_total",
+		Help:      "Commits skipped because their proof did not verify, by server and reason (none_proof: unsigned document such as a v1 import; signature: the signature does not match the author or subkey; proof_type: a proof type that is unsupported or not allowed for the kind; owner_mismatch: a profile under a CCID key authored by someone else; resolve: a referenced document could not be fetched or verified).",
+	}, []string{"server", "reason"})
+
 	robotsRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "crawler",
 		Subsystem: "robots",

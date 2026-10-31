@@ -15,6 +15,7 @@ import (
 	"github.com/concrnt/concrnt-crawler/internal/search/meili"
 	"github.com/concrnt/concrnt-crawler/internal/search/model"
 	"github.com/concrnt/concrnt-crawler/internal/search/normalize"
+	"github.com/concrnt/concrnt-crawler/internal/search/sigtest"
 	"github.com/concrnt/concrnt/client"
 )
 
@@ -78,7 +79,7 @@ func TestCrawlCCFSIndexesProfile(t *testing.T) {
 func TestCrawlCCFSIndexesPost(t *testing.T) {
 	const domain = "manual.test"
 
-	sd := testPostDocument(t, "cckv://con012345678901234567890123456789012345678/concrnt.world/profiles/main/posts/p1", "hello world", time.Date(2026, 5, 15, 1, 0, 0, 0, time.UTC))
+	sd := testPostDocument(t, postsParent+"/p1", "hello world", time.Date(2026, 5, 15, 1, 0, 0, 0, time.UTC))
 	// a domain-owned ccfs resolves to its host without an entity lookup
 	ccfs := "ccfs://manual.test/concrnt/p1"
 	sd.CCFS = &ccfs
@@ -117,6 +118,41 @@ func TestCrawlCCFSIndexesPost(t *testing.T) {
 	}
 	if store.posts[0].Timelines == nil {
 		t.Fatalf("timelines must never be null in the index: %+v", store.posts[0])
+	}
+}
+
+func TestCrawlCCFSRejectsUnverifiedDocuments(t *testing.T) {
+	const domain = "manual.test"
+	const ccfs = "ccfs://manual.test/bafyexample"
+
+	cases := map[string]concrnt.SignedDocument{
+		"none proof": sigtest.NoneProof(t, profileDocument(testAuthor, testAuthor, "alice")),
+		"tampered":   sigtest.Tamper(t, testSignedDocument(t, t0), `"username":"alice"`, `"username":"mallory"`),
+		"impostor":   bob.Sign(t, profileDocument(otherAuthor, testAuthor, "impostor")),
+	}
+	for name, sd := range cases {
+		t.Run(name, func(t *testing.T) {
+			store := &manualStore{}
+			cl := client.New(domain)
+			cl.GetClient().Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				switch r.URL.Path {
+				case "/.well-known/concrnt":
+					return jsonResponse(t, concrnt.WellKnownConcrnt{Domain: domain, Endpoints: map[string]string{resolveEndpoint: "/resolve?uri={uri}"}})
+				case "/resolve":
+					return jsonResponse(t, sd)
+				default:
+					return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found")), Header: make(http.Header)}, nil
+				}
+			})
+			c := New(newTestDB(t), store, cl, config.Default().Crawl, nil)
+			_, err := c.CrawlCCFS(context.Background(), ccfs)
+			if err == nil || !strings.Contains(err.Error(), "signature verification failed") {
+				t.Fatalf("expected a verification error, got %v", err)
+			}
+			if len(store.calls) != 0 {
+				t.Fatalf("an unverified document must not reach the store: %v", store.calls)
+			}
+		})
 	}
 }
 

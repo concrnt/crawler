@@ -1,7 +1,6 @@
 package crawler
 
 import (
-	"encoding/json"
 	"net/url"
 	"strings"
 	"testing"
@@ -92,44 +91,29 @@ func TestReplicationURITemplateExpansion(t *testing.T) {
 
 func testSignedDocument(t *testing.T, createdAt time.Time) concrnt.SignedDocument {
 	t.Helper()
-	doc := concrnt.Document[map[string]string]{
+	return alice.Sign(t, concrnt.Document[map[string]string]{
 		Kind:      "record",
-		Key:       "cckv://con012345678901234567890123456789012345678/profile/main",
+		Key:       "cckv://" + alice.CCID + "/profile/main",
 		Value:     map[string]string{"username": "alice"},
-		Author:    "con012345678901234567890123456789012345678",
+		Author:    alice.CCID,
 		Schema:    "https://schema.concrnt.world/p/main.json",
 		CreatedAt: createdAt,
-	}
-	body, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return concrnt.SignedDocument{
-		Document: string(body),
-		Proof:    concrnt.Proof{Type: concrnt.ProofTypeNone},
-	}
+	})
 }
 
 func testPostDocument(t *testing.T, key string, body string, createdAt time.Time) concrnt.SignedDocument {
 	t.Helper()
-	doc := concrnt.Document[map[string]string]{
+	sd := alice.Sign(t, concrnt.Document[map[string]string]{
 		Kind:      "record",
 		Key:       key,
 		Value:     map[string]string{"body": body},
-		Author:    "con012345678901234567890123456789012345678",
+		Author:    alice.CCID,
 		Schema:    "https://schema.concrnt.world/m/markdown.json",
 		CreatedAt: createdAt,
-	}
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ccfs := "ccfs://con012345678901234567890123456789012345678/concrnt/" + strings.ReplaceAll(key[strings.LastIndex(key, "/")+1:], "-", "")
-	return concrnt.SignedDocument{
-		CCFS:     &ccfs,
-		Document: string(raw),
-		Proof:    concrnt.Proof{Type: concrnt.ProofTypeNone},
-	}
+	})
+	ccfs := "ccfs://" + alice.CCID + "/concrnt/" + strings.ReplaceAll(key[strings.LastIndex(key, "/")+1:], "-", "")
+	sd.CCFS = &ccfs
+	return sd
 }
 
 func configWithLayer(layer string) config.Crawl {
