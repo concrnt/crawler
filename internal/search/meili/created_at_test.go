@@ -57,14 +57,14 @@ func TestUpsertKeepsEarliestCreatedAt(t *testing.T) {
 
 	readUser := func() normalize.UserDocument {
 		var doc normalize.UserDocument
-		if err := store.client.Index(UsersIndex).GetDocumentWithContext(ctx, userID, nil, &doc); err != nil {
+		if err := store.client.Index(UsersIndex).GetDocument(ctx, userID, nil, &doc); err != nil {
 			t.Fatal(err)
 		}
 		return doc
 	}
 	readCommunity := func() normalize.CommunityDocument {
 		var doc normalize.CommunityDocument
-		if err := store.client.Index(CommunitiesIndex).GetDocumentWithContext(ctx, communityID, nil, &doc); err != nil {
+		if err := store.client.Index(CommunitiesIndex).GetDocument(ctx, communityID, nil, &doc); err != nil {
 			t.Fatal(err)
 		}
 		return doc

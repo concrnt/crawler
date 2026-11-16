@@ -5,8 +5,8 @@ go 1.26.0
 require (
 	github.com/concrnt/concrnt v1.12.0-beta0
 	github.com/glebarez/sqlite v1.11.0
-	github.com/labstack/echo/v4 v4.16.3
-	github.com/meilisearch/meilisearch-go v0.36.3
+	github.com/labstack/echo/v4 v4.16.4
+	github.com/meilisearch/meilisearch-go v0.37.0
 	github.com/prometheus/client_golang v1.25.0
 	go.opentelemetry.io/contrib/instrumentation/github.com/labstack/echo/otelecho v0.71.0
 	go.opentelemetry.io/otel v1.47.0
