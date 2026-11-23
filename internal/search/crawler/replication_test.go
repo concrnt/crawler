@@ -184,15 +184,15 @@ func TestCrawlServerAppliesCommitsInLogOrder(t *testing.T) {
 				commit(t, "record", post1, config.DefaultPostSchemas[0], map[string]string{"body": "second"}, "ccfs://a/concrnt/6"),
 				commit(t, "record", postsParent+"/list", "https://schema.concrnt.world/s/list.json", map[string]string{"name": "ignored"}, "ccfs://a/concrnt/7"),
 			},
-			Prev: &t0,
-			Next: &t1,
+			Prev: new(stamp(t0)),
+			Next: new(stamp(t1)),
 		},
 		stamp(t1): {
 			Items: []concrnt.SignedDocument{
 				commit(t, "delete", "", "", post1, "ccfs://a/concrnt/8"),
 				commit(t, "record", post2, config.DefaultPostSchemas[0], map[string]string{"body": "third"}, "ccfs://a/concrnt/9"),
 			},
-			Prev: &t1,
+			Prev: new(stamp(t1)),
 			Next: nil,
 		},
 	}}
@@ -279,7 +279,7 @@ func TestReplicateResumesBehindCursorAndContinuesPastEmptyPages(t *testing.T) {
 	since := t1.Add(-10 * time.Second)
 	server := &replicationServer{t: t, pages: map[string]concrnt.QueryResult{
 		// every row in the window was filtered out for the guest, next still moves
-		stamp(since): {Items: nil, Prev: &t1, Next: &t2},
+		stamp(since): {Items: nil, Prev: new(stamp(t1)), Next: new(stamp(t2))},
 		stamp(t2):    {Items: nil, Prev: nil, Next: nil},
 	}}
 	store := &manualStore{}
@@ -312,11 +312,11 @@ func TestReplicateKeepsNewestPostTimestamp(t *testing.T) {
 	server := &replicationServer{t: t, pages: map[string]concrnt.QueryResult{
 		"": {
 			Items: []concrnt.SignedDocument{postAt(postsParent+"/old", t0), postAt(postsParent+"/new", t2)},
-			Prev:  &t0,
-			Next:  &t1,
+			Prev:  new(stamp(t0)),
+			Next:  new(stamp(t1)),
 		},
 		// a backdated post logged later must not move the gauge back
-		stamp(t1): {Items: []concrnt.SignedDocument{postAt(postsParent+"/backdated", t0)}, Prev: &t1, Next: nil},
+		stamp(t1): {Items: []concrnt.SignedDocument{postAt(postsParent+"/backdated", t0)}, Prev: new(stamp(t1)), Next: nil},
 	}}
 	c := newReplicationCrawler(t, server, &manualStore{}, config.Default().Crawl)
 
@@ -332,9 +332,9 @@ func TestReplicateKeepsNewestPostTimestamp(t *testing.T) {
 func TestReplicateStepsPastStalledCursor(t *testing.T) {
 	stepped := t1.Add(time.Microsecond)
 	server := &replicationServer{t: t, pages: map[string]concrnt.QueryResult{
-		"":             {Items: nil, Prev: &t0, Next: &t1},
-		stamp(t1):      {Items: nil, Prev: &t1, Next: &t1},
-		stamp(stepped): {Items: nil, Prev: &stepped, Next: nil},
+		"":             {Items: nil, Prev: new(stamp(t0)), Next: new(stamp(t1))},
+		stamp(t1):      {Items: nil, Prev: new(stamp(t1)), Next: new(stamp(t1))},
+		stamp(stepped): {Items: nil, Prev: new(stamp(stepped)), Next: nil},
 	}}
 	c := newReplicationCrawler(t, server, &manualStore{}, config.Default().Crawl)
 
@@ -348,8 +348,8 @@ func TestReplicateStepsPastStalledCursor(t *testing.T) {
 
 func TestReplicateRejectsBackwardsCursor(t *testing.T) {
 	server := &replicationServer{t: t, pages: map[string]concrnt.QueryResult{
-		"":        {Items: nil, Prev: &t0, Next: &t1},
-		stamp(t1): {Items: nil, Prev: &t1, Next: &t0},
+		"":        {Items: nil, Prev: new(stamp(t0)), Next: new(stamp(t1))},
+		stamp(t1): {Items: nil, Prev: new(stamp(t1)), Next: new(stamp(t0))},
 	}}
 	c := newReplicationCrawler(t, server, &manualStore{}, config.Default().Crawl)
 	resetCounters()
@@ -376,8 +376,8 @@ func TestReplicateRejectsBackwardsCursor(t *testing.T) {
 
 func TestCrawlServerResetsFailCountWhenPagesProgressed(t *testing.T) {
 	server := &replicationServer{t: t, pages: map[string]concrnt.QueryResult{
-		"":        {Items: nil, Prev: &t0, Next: &t1},
-		stamp(t1): {Items: nil, Prev: &t1, Next: &t0},
+		"":        {Items: nil, Prev: new(stamp(t0)), Next: new(stamp(t1))},
+		stamp(t1): {Items: nil, Prev: new(stamp(t1)), Next: new(stamp(t0))},
 	}}
 	c := newReplicationCrawler(t, server, &manualStore{}, config.Default().Crawl)
 	old := t0.Add(-time.Hour)
@@ -424,7 +424,7 @@ func TestReplicateStopsAtMaxPagesPerRun(t *testing.T) {
 	cfg := config.Default().Crawl
 	cfg.MaxPagesPerRun = 1
 	server := &replicationServer{t: t, pages: map[string]concrnt.QueryResult{
-		"": {Items: nil, Prev: &t0, Next: &t1},
+		"": {Items: nil, Prev: new(stamp(t0)), Next: new(stamp(t1))},
 	}}
 	c := newReplicationCrawler(t, server, &manualStore{}, cfg)
 	cursor, err := c.getOrCreateReplicationCursor(context.Background(), replicationDomain)
