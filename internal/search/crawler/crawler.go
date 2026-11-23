@@ -726,8 +726,14 @@ func (c *Crawler) replicate(ctx context.Context, wkc concrnt.WellKnownConcrnt, c
 			// clock instead would skip commits whenever it runs ahead of the
 			// server's.
 			cursorAt := cursor.CursorAt
-			if result.Prev != nil && (cursorAt == nil || result.Prev.After(*cursorAt)) {
-				cursorAt = result.Prev
+			if result.Prev != nil {
+				prev, err := time.Parse(time.RFC3339Nano, *result.Prev)
+				if err != nil {
+					return false, err
+				}
+				if cursorAt == nil || prev.After(*cursorAt) {
+					cursorAt = &prev
+				}
 			}
 			now := time.Now().UTC()
 			cursor.CursorAt = cursorAt
@@ -748,7 +754,10 @@ func (c *Crawler) replicate(ctx context.Context, wkc concrnt.WellKnownConcrnt, c
 		// (server-side limitation): step past that instant so the rest of the
 		// log is still reached, giving up only the rows at that instant
 		// (1µs: server timestamps are stored with microsecond precision).
-		next := *result.Next
+		next, err := time.Parse(time.RFC3339Nano, *result.Next)
+		if err != nil {
+			return false, err
+		}
 		if since != nil {
 			if next.Before(*since) {
 				return false, fmt.Errorf("replication cursor went backwards: since %s next %s", since.Format(time.RFC3339Nano), next.Format(time.RFC3339Nano))
